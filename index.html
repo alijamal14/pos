@@ -48,7 +48,13 @@
     .pill { padding: 4px 10px; border-radius: 999px; background: #1a2249; font-size: 12px; color: #a8b6ff; }
     .footer { display: flex; justify-content: space-between; align-items: center; }
     .nowrap { white-space: nowrap; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .qr-container { display: grid; gap: 8px; align-items: start; }
+    .qr-code { border: 1px solid #2c3978; border-radius: 8px; padding: 8px; background: #0f1530; }
+    .copy-btn { margin-left: 8px; padding: 4px 8px; font-size: 12px; }
+    .status-indicator { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; }
+    .status-connected { background: #5ee6a8; }
+    .status-disconnected { background: #ff6b6b; }
+    .status-pending { background: #ffd93d; }
   </style>
 </head>
 <body>
@@ -75,26 +81,72 @@
 
       <div class="card">
         <h2>Peer‑to‑Peer Linking</h2>
-        <p class="muted">1) Click <b>Create Offer</b> and send the text below to your peer (AirDrop/WhatsApp/etc). 2) Paste their <b>Answer</b> back here and click <b>Apply Answer</b>. Repeat on the other device (swap roles) to create a mesh.</p>
+        <p class="muted">Connect devices easily with QR codes or manual copy/paste. No servers required!</p>
         <div class="grid2">
-          <button id="createOfferBtn" class="btn">Create Offer</button>
-          <span id="connState" class="pill">disconnected</span>
+          <button id="createOfferBtn" class="btn">📱 Create Offer</button>
+          <span id="connState" class="pill">
+            <span class="status-indicator status-disconnected"></span>disconnected
+          </span>
         </div>
-        <label class="muted">Your Offer (copy & share)</label>
-        <textarea id="localOffer" class="input" placeholder="Click 'Create Offer'"></textarea>
+
+        <!-- QR Code Section -->
+        <div id="qrSection" style="display: none;">
+          <label class="muted">📱 Scan this QR code with another device:</label>
+          <div class="qr-container">
+            <div id="offerQR" class="qr-code"></div>
+            <button id="copyOfferBtn" class="btn copy-btn">📋 Copy Text</button>
+          </div>
+        </div>
+
+        <!-- Manual Section -->
+        <details id="manualSection">
+          <summary class="muted" style="cursor: pointer; user-select: none;">🔧 Manual Mode (Advanced)</summary>
+          <div style="margin-top: 12px;">
+            <label class="muted">Your Offer (copy & share)</label>
+            <div class="grid2">
+              <textarea id="localOffer" class="input" placeholder="Click 'Create Offer'"></textarea>
+              <button id="copyOfferTextBtn" class="btn copy-btn">📋 Copy</button>
+            </div>
+          </div>
+        </details>
+
+        <hr style="border-color:#2c3978; opacity:.4;">
+
+        <p class="muted">📲 If you received an <b>Offer</b> from a peer:</p>
+        <div class="grid2">
+          <input id="remoteOffer" class="input" placeholder="Paste peer's Offer here or scan QR" />
+          <div class="flex">
+            <button id="scanOfferBtn" class="btn">📷 Scan QR</button>
+            <button id="createAnswerBtn" class="btn">📱 Create Answer</button>
+          </div>
+        </div>
+
+        <!-- Answer Section -->
+        <div id="answerSection" style="display: none;">
+          <label class="muted">📤 Send this answer back to the peer:</label>
+          <div class="qr-container">
+            <div id="answerQR" class="qr-code"></div>
+            <button id="copyAnswerBtn" class="btn copy-btn">📋 Copy Text</button>
+          </div>
+        </div>
+
+        <!-- Manual Answer -->
+        <details id="manualAnswerSection">
+          <summary class="muted" style="cursor: pointer; user-select: none;">🔧 Manual Answer</summary>
+          <div style="margin-top: 12px;">
+            <label class="muted">Your Answer (copy & share)</label>
+            <div class="grid2">
+              <textarea id="localAnswer" class="input" placeholder="Paste back to the peer who sent you the Offer"></textarea>
+              <button id="copyAnswerTextBtn" class="btn copy-btn">📋 Copy</button>
+            </div>
+          </div>
+        </details>
+
         <div class="flex">
           <input id="remoteAnswer" class="input" placeholder="Paste peer's Answer here" />
-          <button id="applyAnswerBtn" class="btn">Apply Answer</button>
+          <button id="applyAnswerBtn" class="btn">✅ Apply Answer</button>
+          <button id="disconnectBtn" class="btn danger">❌ Disconnect</button>
         </div>
-        <hr style="border-color:#2c3978; opacity:.4;">
-        <p class="muted">If you received an <b>Offer</b> from a peer: paste it below and click <b>Create Answer</b>, then send the produced answer back to them.</p>
-        <input id="remoteOffer" class="input" placeholder="Paste peer's Offer here" />
-        <div class="flex">
-          <button id="createAnswerBtn" class="btn">Create Answer</button>
-          <button id="disconnectBtn" class="btn danger">Disconnect</button>
-        </div>
-        <label class="muted">Your Answer (copy & share)</label>
-        <textarea id="localAnswer" class="input" placeholder="Paste back to the peer who sent you the Offer"></textarea>
       </div>
     </div>
 
@@ -108,10 +160,37 @@
       </div>
       <div class="muted">Connections: <code class="badge" id="stats">0 peers</code></div>
     </div>
-  </div>
-
-<script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+  <script>
 (async () => {
+  // Wait for QR code library to load
+  let qrCodeReady = false;
+  let jsQRReady = false;
+  
+  const checkLibraries = () => {
+    if (typeof QRCode !== 'undefined' && !qrCodeReady) {
+      qrCodeReady = true;
+      console.log('✅ QRCode library loaded successfully');
+    }
+    if (typeof jsQR !== 'undefined' && !jsQRReady) {
+      jsQRReady = true;
+      console.log('✅ jsQR library loaded successfully');
+      
+      // Update scanner status if modal is open
+      const statusEl = document.getElementById('scannerStatus');
+      if (statusEl) {
+        statusEl.textContent = '✅ Scanner ready';
+        statusEl.style.color = '#5ee6a8';
+      }
+    }
+    
+    if (!qrCodeReady || !jsQRReady) {
+      setTimeout(checkLibraries, 100);
+    }
+  };
+  checkLibraries();
+
   // -------- Utilities --------
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   const now = () => new Date().toISOString();
@@ -261,7 +340,18 @@
   // -------- WebRTC (manual copy/paste signaling; iceServers: []) --------
   const peers = new Map(); // id -> { pc, dc }
   const statsEl = document.getElementById('stats');
-  function updateStats() { statsEl.textContent = `${peers.size + presenceLocalTabs.size} realtime peer${(peers.size + presenceLocalTabs.size)===1?'':'s'}`; }
+  function updateStats() {
+    const totalPeers = peers.size;
+    statsEl.textContent = `${totalPeers} realtime peer${totalPeers===1?'':'s'}`;
+
+    // Update connection status indicator
+    const connState = document.getElementById('connState');
+    if (totalPeers > 0) {
+      connState.innerHTML = '<span class="status-indicator status-connected"></span>connected';
+    } else {
+      connState.innerHTML = '<span class="status-indicator status-disconnected"></span>disconnected';
+    }
+  }
 
   function newPeer() {
     const pc = new RTCPeerConnection({ iceServers: [] }); // no STUN/TURN
@@ -322,7 +412,7 @@
     try { dc.send(JSON.stringify({ ...payload, origin: peerId })); } catch {}
   }
 
-  // --- Signaling helpers (copy/paste) ---
+  // --- Signaling helpers (copy/paste + QR codes) ---
   async function createOffer() {
     const { id, pc } = newPeer();
     const dc = pc.createDataChannel('data');
@@ -330,7 +420,49 @@
     const offer = await pc.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false });
     await pc.setLocalDescription(offer);
     await waitForIceGathering(pc);
-    document.getElementById('localOffer').value = b64(JSON.stringify({ sdp: pc.localDescription }));
+
+    const offerData = b64(JSON.stringify({ sdp: pc.localDescription }));
+
+    // Update UI
+    document.getElementById('localOffer').value = offerData;
+    document.getElementById('qrSection').style.display = 'block';
+    document.getElementById('manualSection').open = false;
+
+    // Generate QR Code
+    const qrContainer = document.getElementById('offerQR');
+    qrContainer.innerHTML = '<p style="color: #8aa0ff; font-size: 12px;">⏳ Generating QR code...</p>';
+    
+    // Try QRCode library first, then fallback
+    const generateOfferQR = () => {
+      if (qrCodeReady) {
+        qrContainer.innerHTML = '';
+        QRCode.toCanvas(qrContainer, offerData, {
+          width: 200,
+          height: 200,
+          color: { dark: '#f3f6ff', light: '#0f1530' }
+        }, function (error) {
+          if (error) {
+            console.error('QRCode library failed, using fallback:', error);
+            generateFallbackQR(qrContainer, offerData);
+          }
+        });
+      } else {
+        // Use fallback QR generation
+        console.log('QRCode library not ready, using fallback');
+        generateFallbackQR(qrContainer, offerData);
+      }
+    };
+    
+    // Try immediately, then wait if needed
+    setTimeout(generateOfferQR, 100);
+
+    // Auto-copy to clipboard
+    try {
+      await navigator.clipboard.writeText(offerData);
+      showNotification('📋 Offer copied to clipboard!');
+    } catch (err) {
+      console.log('Clipboard copy failed, user can copy manually');
+    }
   }
 
   async function applyAnswer() {
@@ -345,20 +477,74 @@
 
   async function createAnswer() {
     const offerText = document.getElementById('remoteOffer').value.trim();
-    if (!offerText) return alert('Paste an Offer');
-    const { id, pc } = newPeer();
-    const { sdp: offer } = JSON.parse(ub64(offerText));
-    await pc.setRemoteDescription(offer);
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    await waitForIceGathering(pc);
-    document.getElementById('localAnswer').value = b64(JSON.stringify({ sdp: pc.localDescription }));
+    if (!offerText) return alert('Paste an Offer or scan a QR code');
+
+    try {
+      const { id, pc } = newPeer();
+      const { sdp: offer } = JSON.parse(ub64(offerText));
+      await pc.setRemoteDescription(offer);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await waitForIceGathering(pc);
+
+      const answerData = b64(JSON.stringify({ sdp: pc.localDescription }));
+
+      // Update UI
+      document.getElementById('localAnswer').value = answerData;
+      document.getElementById('answerSection').style.display = 'block';
+      document.getElementById('manualAnswerSection').open = false;
+
+      // Generate QR Code
+      const qrContainer = document.getElementById('answerQR');
+      qrContainer.innerHTML = '<p style="color: #8aa0ff; font-size: 12px;">⏳ Generating QR code...</p>';
+      
+      // Try QRCode library first, then fallback
+      const generateAnswerQR = () => {
+        if (qrCodeReady) {
+          qrContainer.innerHTML = '';
+          QRCode.toCanvas(qrContainer, answerData, {
+            width: 200,
+            height: 200,
+            color: { dark: '#f3f6ff', light: '#0f1530' }
+          }, function (error) {
+            if (error) {
+              console.error('QRCode library failed, using fallback:', error);
+              generateFallbackQR(qrContainer, answerData);
+            }
+          });
+        } else {
+          // Use fallback QR generation
+          console.log('QRCode library not ready, using fallback');
+          generateFallbackQR(qrContainer, answerData);
+        }
+      };
+      
+      // Try immediately, then wait if needed
+      setTimeout(generateAnswerQR, 100);
+
+      // Auto-copy to clipboard
+      try {
+        await navigator.clipboard.writeText(answerData);
+        showNotification('📋 Answer copied to clipboard!');
+      } catch (err) {
+        console.log('Clipboard copy failed, user can copy manually');
+      }
+
+      document.getElementById('remoteOffer').value = '';
+    } catch (error) {
+      alert('Invalid offer data. Please check and try again.');
+    }
   }
 
   function disconnectAll() {
     for (const [id, {pc}] of peers) { try { pc.close(); } catch {} }
     peers.clear(); updateStats();
     document.getElementById('connState').textContent = 'disconnected';
+    document.getElementById('connState').innerHTML = '<span class="status-indicator status-disconnected"></span>disconnected';
+
+    // Hide QR sections
+    document.getElementById('qrSection').style.display = 'none';
+    document.getElementById('answerSection').style.display = 'none';
   }
 
   function waitForIceGathering(pc) {
@@ -373,7 +559,303 @@
   function b64(s) { return btoa(unescape(encodeURIComponent(s))); }
   function ub64(s) { return decodeURIComponent(escape(atob(s))); }
 
-  // -------- Local tab realtime via BroadcastChannel --------
+  // --- Fallback QR Code Generation ---
+  function generateFallbackQR(container, text) {
+    // Create a simple QR code using an online service as fallback
+    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(text)}&bgcolor=0f1530&color=f3f6ff`;
+    
+    const img = document.createElement('img');
+    img.src = qrUrl;
+    img.style.cssText = 'width: 200px; height: 200px; border-radius: 8px;';
+    img.onerror = () => {
+      container.innerHTML = '<p style="color: #ff6b6b; font-size: 12px;">QR generation failed. Use manual copy below.</p>';
+    };
+    
+    container.innerHTML = '';
+    container.appendChild(img);
+  }
+
+  // --- UI Helpers ---
+  function showNotification(message) {
+    // Create notification element
+    const notification = document.createElement('div');
+    notification.textContent = message;
+    notification.style.cssText = `
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      background: #5ee6a8;
+      color: #0b1020;
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-weight: 600;
+      z-index: 1000;
+      animation: slideIn 0.3s ease-out;
+    `;
+    document.body.appendChild(notification);
+
+    // Remove after 3 seconds
+    setTimeout(() => {
+      notification.style.animation = 'slideOut 0.3s ease-in';
+      setTimeout(() => notification.remove(), 300);
+    }, 3000);
+  }
+
+  // Add notification animations to CSS
+  const style = document.createElement('style');
+  style.textContent = `
+    @keyframes slideIn {
+      from { transform: translateX(100%); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+    @keyframes slideOut {
+      from { transform: translateX(0); opacity: 1; }
+      to { transform: translateX(100%); opacity: 0; }
+    }
+  `;
+  document.head.appendChild(style);
+
+  // --- QR Scanner ---
+  let scannerStream = null;
+  let scanInterval = null;
+
+  // Make functions globally accessible
+  window.stopQRScanner = function() {
+    console.log('Stopping QR scanner');
+
+    // Stop scanning interval
+    if (scanInterval) {
+      clearInterval(scanInterval);
+      scanInterval = null;
+    }
+
+    // Stop camera stream
+    if (scannerStream) {
+      scannerStream.getTracks().forEach(track => track.stop());
+      scannerStream = null;
+    }
+
+    // Remove modal
+    const modal = document.getElementById('qrScannerModal');
+    if (modal) {
+      modal.remove();
+    }
+  };
+
+  window.processManualQR = function(targetInputId) {
+    const input = document.getElementById('manualQRInput');
+    const targetInput = document.getElementById(targetInputId);
+    if (input && input.value && targetInput) {
+      targetInput.value = input.value;
+      window.stopQRScanner();
+      showNotification('📱 QR code processed successfully!');
+    }
+  };
+
+  async function startQRScanner(targetInputId) {
+    console.log('Starting QR scanner for:', targetInputId);
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: 'environment',
+          width: { ideal: 640 },
+          height: { ideal: 480 }
+        }
+      });
+
+      scannerStream = stream;
+      const video = document.createElement('video');
+      video.srcObject = stream;
+      video.setAttribute('playsinline', ''); // Required for iOS
+      video.setAttribute('autoplay', ''); // Ensure autoplay
+      video.setAttribute('muted', ''); // Required for autoplay in some browsers
+      video.style.width = '100%';
+      video.style.maxWidth = '300px';
+      video.style.borderRadius = '8px';
+      video.style.background = '#000';
+
+      // Wait for video to be ready
+      await new Promise((resolve) => {
+        video.onloadedmetadata = () => {
+          console.log('Video metadata loaded, dimensions:', video.videoWidth, 'x', video.videoHeight);
+          resolve();
+        };
+        video.oncanplay = () => {
+          console.log('Video can play');
+          // Update status when video is ready
+          const statusEl = document.getElementById('scannerStatus');
+          if (statusEl) {
+            statusEl.textContent = jsQRReady ? '✅ Camera ready - Scanner active' : '📷 Camera ready - Loading scanner...';
+            statusEl.style.color = '#5ee6a8';
+          }
+        };
+        video.play().then(() => {
+          console.log('Video started playing');
+        }).catch(err => {
+          console.error('Video play failed:', err);
+          const statusEl = document.getElementById('scannerStatus');
+          if (statusEl) {
+            statusEl.textContent = '❌ Video playback failed';
+            statusEl.style.color = '#ff6b6b';
+          }
+        });
+      });
+
+      // Create scanner modal
+      const modal = document.createElement('div');
+      modal.id = 'qrScannerModal';
+      modal.style.cssText = `
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(0,0,0,0.9);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 10000;
+      `;
+
+      const scannerContainer = document.createElement('div');
+      scannerContainer.style.cssText = `
+        background: #0f1530;
+        padding: 20px;
+        border-radius: 16px;
+        text-align: center;
+        max-width: 90vw;
+        position: relative;
+      `;
+
+      scannerContainer.innerHTML = `
+        <h3 style="color: #f3f6ff; margin: 0 0 16px;">📷 Scan QR Code</h3>
+        <div id="scannerStatus" style="color: #8aa0ff; font-size: 12px; margin-bottom: 16px;">
+          ${jsQRReady ? '✅ Scanner ready' : '⏳ Loading scanner...'}
+        </div>
+      `;
+
+      // Add video container
+      const videoContainer = document.createElement('div');
+      videoContainer.style.cssText = 'position: relative; display: inline-block; margin-bottom: 16px;';
+
+      // Add scanning frame overlay
+      const overlay = document.createElement('div');
+      overlay.style.cssText = `
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: 200px;
+        height: 200px;
+        border: 2px solid #5ee6a8;
+        border-radius: 8px;
+        pointer-events: none;
+        box-shadow: 0 0 0 2px rgba(94, 230, 168, 0.3);
+      `;
+
+      videoContainer.appendChild(video);
+      videoContainer.appendChild(overlay);
+      scannerContainer.appendChild(videoContainer);
+
+      // Add instructions
+      const instructions = document.createElement('p');
+      instructions.textContent = 'Position QR code within the frame';
+      instructions.style.cssText = 'color: #8aa0ff; font-size: 14px; margin: 16px 0;';
+      scannerContainer.appendChild(instructions);
+
+      // Add controls
+      const controls = document.createElement('div');
+      controls.style.cssText = 'margin-top: 16px;';
+      controls.innerHTML = '<button class="btn danger" onclick="window.stopQRScanner()">❌ Cancel</button>';
+      scannerContainer.appendChild(controls);
+
+      modal.appendChild(scannerContainer);
+      document.body.appendChild(modal);
+
+      // Add manual input option
+      addManualInputOption(scannerContainer, targetInputId);
+
+      // Start scanning
+      startScanning(video, targetInputId);
+
+    } catch (error) {
+      console.error('Camera access error:', error);
+      alert('Camera access denied or not available. Please paste the code manually.');
+    }
+  }
+
+  function addManualInputOption(container, targetInputId) {
+    const manualDiv = document.createElement('div');
+    manualDiv.id = 'manualInputSection';
+    manualDiv.style.cssText = 'margin-top: 16px; padding-top: 16px; border-top: 1px solid #2c3978;';
+    manualDiv.innerHTML = `
+      <p style="color: #c5ceff99; font-size: 14px; margin-bottom: 8px;">Or paste the code manually:</p>
+      <input type="text" id="manualQRInput" class="input" placeholder="Paste QR code content here" style="margin-bottom: 10px; width: 100%;">
+      <button class="btn accent" onclick="window.processManualQR('${targetInputId}')">✅ Use This Code</button>
+    `;
+    container.appendChild(manualDiv);
+  }
+
+  function startScanning(videoElement, targetInputId) {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true }); // Fix performance warning
+    
+    scanInterval = setInterval(() => {
+      if (!scannerStream) {
+        clearInterval(scanInterval);
+        return;
+      }
+
+      try {
+        if (videoElement.videoWidth === 0 || videoElement.videoHeight === 0) {
+          console.log('Video not ready yet');
+          return;
+        }
+
+        canvas.width = videoElement.videoWidth;
+        canvas.height = videoElement.videoHeight;
+        ctx.drawImage(videoElement, 0, 0);
+
+        // Get image data for QR detection
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        
+        // Detect QR code
+        const qrText = detectQRFromImageData(imageData);
+        
+        if (qrText) {
+          console.log('QR Code detected:', qrText);
+          processScannedQR(qrText, targetInputId);
+        }
+      } catch (error) {
+        console.error('Scanning error:', error);
+      }
+    }, 200); // Scan every 200ms
+  }
+
+  function detectQRFromImageData(imageData) {
+    if (typeof jsQR === 'undefined') {
+      console.log('jsQR library not loaded');
+      return null;
+    }
+
+    try {
+      const code = jsQR(imageData.data, imageData.width, imageData.height);
+      if (code) {
+        console.log('QR Code detected:', code.data);
+        return code.data;
+      }
+    } catch (error) {
+      console.error('QR detection error:', error);
+    }
+    return null;
+  }
+
+  function processScannedQR(qrText, targetInputId) {
+    const targetInput = document.getElementById(targetInputId);
+    if (targetInput && qrText) {
+      targetInput.value = qrText;
+      window.stopQRScanner();
+      showNotification('📱 QR code scanned successfully!');
+    }
+  }
   const bc = new BroadcastChannel('p2p-items-v1');
   bc.onmessage = (e) => handleMessage(e.data, 'bc');
   const presenceLocalTabs = new Set();
@@ -404,10 +886,78 @@
   };
 
   // -------- Buttons wiring --------
-  document.getElementById('createOfferBtn').onclick = createOffer;
-  document.getElementById('applyAnswerBtn').onclick = applyAnswer;
-  document.getElementById('createAnswerBtn').onclick = createAnswer;
-  document.getElementById('disconnectBtn').onclick = disconnectAll;
+  console.log('Setting up button event handlers...');
+
+  document.getElementById('createOfferBtn').onclick = () => {
+    console.log('Create Offer button clicked');
+    createOffer();
+  };
+  document.getElementById('applyAnswerBtn').onclick = () => {
+    console.log('Apply Answer button clicked');
+    applyAnswer();
+  };
+  document.getElementById('createAnswerBtn').onclick = () => {
+    console.log('Create Answer button clicked');
+    createAnswer();
+  };
+  document.getElementById('disconnectBtn').onclick = () => {
+    console.log('Disconnect button clicked');
+    disconnectAll();
+  };
+
+  // Copy button handlers
+  document.getElementById('copyOfferBtn').onclick = async () => {
+    console.log('Copy Offer button clicked');
+    const text = document.getElementById('localOffer').value;
+    try {
+      await navigator.clipboard.writeText(text);
+      showNotification('📋 Offer copied to clipboard!');
+    } catch (err) {
+      console.error('Clipboard copy failed:', err);
+      alert('Failed to copy to clipboard. Please copy manually.');
+    }
+  };
+
+  document.getElementById('copyOfferTextBtn').onclick = async () => {
+    console.log('Copy Offer Text button clicked');
+    const text = document.getElementById('localOffer').value;
+    try {
+      await navigator.clipboard.writeText(text);
+      showNotification('📋 Offer text copied!');
+    } catch (err) {
+      console.error('Clipboard copy failed:', err);
+      alert('Failed to copy to clipboard. Please copy manually.');
+    }
+  };
+
+  document.getElementById('copyAnswerBtn').onclick = async () => {
+    console.log('Copy Answer button clicked');
+    const text = document.getElementById('localAnswer').value;
+    try {
+      await navigator.clipboard.writeText(text);
+      showNotification('📋 Answer copied to clipboard!');
+    } catch (err) {
+      console.error('Clipboard copy failed:', err);
+      alert('Failed to copy to clipboard. Please copy manually.');
+    }
+  };
+
+  document.getElementById('copyAnswerTextBtn').onclick = async () => {
+    console.log('Copy Answer Text button clicked');
+    const text = document.getElementById('localAnswer').value;
+    try {
+      await navigator.clipboard.writeText(text);
+      showNotification('📋 Answer text copied!');
+    } catch (err) {
+      console.error('Clipboard copy failed:', err);
+      alert('Failed to copy to clipboard. Please copy manually.');
+    }
+  };
+
+  document.getElementById('scanOfferBtn').onclick = () => {
+    console.log('Scan Offer button clicked');
+    startQRScanner('remoteOffer');
+  };
 
   // -------- Init --------
   await loadFromDB();
