@@ -81,14 +81,14 @@
           <span id="connState" class="pill">disconnected</span>
         </div>
         <label class="muted">Your Offer (copy & share)</label>
-        <textarea id="localOffer" class="input" placeholder="Click ‘Create Offer’"></textarea>
+        <textarea id="localOffer" class="input" placeholder="Click 'Create Offer'"></textarea>
         <div class="flex">
-          <input id="remoteAnswer" class="input" placeholder="Paste peer’s Answer here" />
+          <input id="remoteAnswer" class="input" placeholder="Paste peer's Answer here" />
           <button id="applyAnswerBtn" class="btn">Apply Answer</button>
         </div>
         <hr style="border-color:#2c3978; opacity:.4;">
         <p class="muted">If you received an <b>Offer</b> from a peer: paste it below and click <b>Create Answer</b>, then send the produced answer back to them.</p>
-        <input id="remoteOffer" class="input" placeholder="Paste peer’s Offer here" />
+        <input id="remoteOffer" class="input" placeholder="Paste peer's Offer here" />
         <div class="flex">
           <button id="createAnswerBtn" class="btn">Create Answer</button>
           <button id="disconnectBtn" class="btn danger">Disconnect</button>
@@ -117,6 +117,7 @@
   const now = () => new Date().toISOString();
   const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g,c=>(c^crypto.getRandomValues(new Uint8Array(1))[0]&15>>c/4).toString(16)));
   const clamp = (n, a, b) => Math.max(a, Math.min(n, b));
+  const debounce = (fn, ms=120) => { let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); }; };
 
   // -------- Identity --------
   const peerId = localStorage.getItem('peerId') || (() => { const id = uuid().slice(0,8); localStorage.setItem('peerId', id); return id; })();
@@ -172,24 +173,6 @@
     render();
   }
 
-  function render() {
-    const list = document.getElementById('list');
-    list.innerHTML = '';
-    for (const it of toArray(items)) {
-      if (it.deleted) continue; // hide tombstoned
-      const row = document.createElement('div');
-      row.className = 'item';
-      const left = document.createElement('div');
-      left.innerHTML = `<div>${escapeHtml(it.text)}</div><small>by ${it.author || 'unknown'} · ${timeAgo(it.updatedAt)}</small>`;
-      const right = document.createElement('div');
-      const del = document.createElement('button'); del.className = 'btn danger'; del.textContent = 'Delete';
-      del.onclick = () => applyOp({ type: 'delete', id: it.id });
-      right.appendChild(del);
-      row.appendChild(left); row.appendChild(right);
-      list.appendChild(row);
-    }
-  }
-
   function escapeHtml(s='') { return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c])); }
   function timeAgo(iso) {
     if (!iso) return '';
@@ -197,6 +180,41 @@
     const units = [[31536000,'y'],[2592000,'mo'],[604800,'w'],[86400,'d'],[3600,'h'],[60,'m']];
     for (const [sec,label] of units) if (s >= sec) return `${Math.floor(s/sec)}${label} ago`;
     return s > 5 ? `${s}s ago` : 'just now';
+  }
+
+  function rowEl(it) {
+    const row = document.createElement('div');
+    row.className = 'item';
+    const left = document.createElement('div');
+
+    const input = document.createElement('input');
+    input.className = 'input';
+    input.value = it.text;
+    input.placeholder = 'Edit item…';
+    input.oninput = () => scheduleEdit(it.id, input.value);
+
+    const meta = document.createElement('small');
+    meta.textContent = `by ${it.author || 'unknown'} · ${timeAgo(it.updatedAt)}`;
+
+    left.appendChild(input);
+    left.appendChild(meta);
+
+    const right = document.createElement('div');
+    const del = document.createElement('button'); del.className = 'btn danger'; del.textContent = 'Delete';
+    del.onclick = () => applyOp({ type: 'delete', id: it.id });
+    right.appendChild(del);
+
+    row.appendChild(left); row.appendChild(right);
+    return row;
+  }
+
+  function render() {
+    const list = document.getElementById('list');
+    list.innerHTML = '';
+    for (const it of toArray(items)) {
+      if (it.deleted) continue; // hide tombstoned
+      list.appendChild(rowEl(it));
+    }
   }
 
   // -------- Ops & Merge (LWW map with tombstones) --------
@@ -209,7 +227,8 @@
       if (!cur || (cur.updatedAt||'') < (op.item.updatedAt||'')) {
         items[op.item.id] = op.item;
         await put(op.item);
-        render();
+        // render only if not a local text-typing echo to keep caret position
+        if (fromPeer !== 'local-typing') render();
       }
     } else if (op.type === 'delete') {
       const cur = items[op.id];
@@ -218,8 +237,17 @@
       op = { type: 'upsert', item: tomb }; // normalize broadcast as upsert of tombstone
     }
     // Broadcast to peers except the sender
-    broadcast(op, fromPeer);
+    broadcast({ type: 'op', op }, fromPeer);
   }
+
+  // Real-time local typing: debounce and push without re-rendering locally
+  const scheduleEdit = debounce(async (id, text) => {
+    const it = items[id]; if (!it || it.deleted) return;
+    const upd = { ...it, text, updatedAt: now() };
+    items[id] = upd; await put(upd);
+    broadcast({ type: 'op', op: { type: 'upsert', item: upd } }, 'local-typing');
+    // keep UI responsive; no render() here to preserve caret
+  }, 80);
 
   // -------- UI events --------
   document.getElementById('addBtn').onclick = () => {
@@ -233,16 +261,14 @@
   // -------- WebRTC (manual copy/paste signaling; iceServers: []) --------
   const peers = new Map(); // id -> { pc, dc }
   const statsEl = document.getElementById('stats');
-  function updateStats() { statsEl.textContent = `${peers.size} peer${peers.size===1?'':'s'}`; }
+  function updateStats() { statsEl.textContent = `${peers.size + presenceLocalTabs.size} realtime peer${(peers.size + presenceLocalTabs.size)===1?'':'s'}`; }
 
   function newPeer() {
     const pc = new RTCPeerConnection({ iceServers: [] }); // no STUN/TURN
     const id = uuid().slice(0,6);
     let dc;
 
-    pc.ondatachannel = (e) => {
-      dc = e.channel; setupDC(id, pc, dc);
-    };
+    pc.ondatachannel = (e) => { dc = e.channel; setupDC(id, pc, dc); };
 
     pc.oniceconnectionstatechange = () => {
       document.getElementById('connState').textContent = pc.iceConnectionState;
@@ -265,14 +291,19 @@
   }
 
   function broadcast(obj, exceptId=null) {
-    const data = JSON.stringify(obj);
+    // include origin for local-tab dedupe
+    const msg = { ...obj, origin: peerId };
+    const data = JSON.stringify(msg);
     for (const [id, {dc}] of peers) if (dc && dc.readyState === 'open' && id !== exceptId) dc.send(data);
+    // Also sync across local tabs in real time
+    try { bc.postMessage(msg); } catch {}
   }
 
   async function handleMessage(data, fromId) {
-    let msg; try { msg = JSON.parse(data); } catch { return; }
+    let msg; try { msg = typeof data === 'string' ? JSON.parse(data) : data; } catch { return; }
+    if (msg.origin && msg.origin === peerId) return; // ignore our own echoes via BroadcastChannel
+
     if (msg.type === 'full-sync') {
-      // Merge full map via LWW
       const remote = msg.items || {};
       for (const id of Object.keys(remote)) {
         const a = items[id]; const b = remote[id];
@@ -281,12 +312,14 @@
       render();
     } else if (msg.type === 'op') {
       await applyOp(msg.op, fromId);
+    } else if (msg.type === 'presence') {
+      presenceLocalTabs.add(msg.tabId||'?'); updateStats();
     }
   }
 
   function syncFull(dc) {
     const payload = { type: 'full-sync', items };
-    try { dc.send(JSON.stringify(payload)); } catch {}
+    try { dc.send(JSON.stringify({ ...payload, origin: peerId })); } catch {}
   }
 
   // --- Signaling helpers (copy/paste) ---
@@ -296,7 +329,6 @@
     setupDC(id, pc, dc);
     const offer = await pc.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false });
     await pc.setLocalDescription(offer);
-    // Wait for ICE gathering complete to embed candidates in SDP
     await waitForIceGathering(pc);
     document.getElementById('localOffer').value = b64(JSON.stringify({ sdp: pc.localDescription }));
   }
@@ -334,13 +366,22 @@
       if (pc.iceGatheringState === 'complete') return resolve();
       const check = () => pc.iceGatheringState === 'complete' && resolve();
       pc.addEventListener('icegatheringstatechange', check);
-      // Safety timeout in case some browsers stall
       setTimeout(resolve, 1500);
     });
   }
 
   function b64(s) { return btoa(unescape(encodeURIComponent(s))); }
   function ub64(s) { return decodeURIComponent(escape(atob(s))); }
+
+  // -------- Local tab realtime via BroadcastChannel --------
+  const bc = new BroadcastChannel('p2p-items-v1');
+  bc.onmessage = (e) => handleMessage(e.data, 'bc');
+  const presenceLocalTabs = new Set();
+  function pulsePresence() {
+    try { bc.postMessage({ type:'presence', tabId: peerId + ':' + tabStamp, origin: peerId }); } catch {}
+  }
+  const tabStamp = Math.random().toString(36).slice(2,6);
+  setInterval(pulsePresence, 2000);
 
   // -------- Export / Import --------
   document.getElementById('exportBtn').onclick = async () => {
