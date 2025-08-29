@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>P2P Items — No Server</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: #121937;
+      --muted: #8aa0ff;
+      --text: #f3f6ff;
+      --accent: #5ee6a8;
+      --danger: #ff6b6b;
+      --card: #0f1530;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial;
+      background: linear-gradient(160deg, #0b1020, #0b1530 40%, #0a1130 70%);
+      color: var(--text);
+      display: grid;
+      place-items: start center;
+      padding: 24px;
+    }
+    .app { width: min(1000px, 100%); display: grid; gap: 16px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .card { background: var(--panel); border-radius: 16px; padding: 16px; box-shadow: 0 8px 24px rgba(0,0,0,.25); }
+    h1 { margin: 0 0 8px; font-weight: 800; letter-spacing: .2px; }
+    h2 { margin: 0 0 12px; font-size: 16px; color: #cfd7ff; text-transform: uppercase; letter-spacing: .1em; }
+    .muted { color: #c5ceff99; font-size: 13px; }
+    .list { display: grid; gap: 8px; }
+    .item { background: var(--card); padding: 12px; border-radius: 12px; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px; }
+    .item small { color: #9db0ff; }
+    .btn {
+      border: 0; border-radius: 12px; padding: 10px 14px; background: #2a3570; color: var(--text); cursor: pointer; font-weight: 600;
+    }
+    .btn:hover { filter: brightness(1.1); }
+    .btn.accent { background: #1b7a61; }
+    .btn.danger { background: #7a1b1b; }
+    .input { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid #2c3978; background: #0f1530; color: var(--text); }
+    textarea.input { min-height: 110px; resize: vertical; }
+    code.badge { background: #0f1530; border: 1px solid #2c3978; padding: 6px 10px; border-radius: 999px; font-size: 12px; }
+    .flex { display: flex; gap: 8px; }
+    .right { text-align: right; }
+    .grid2 { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+    .pill { padding: 4px 10px; border-radius: 999px; background: #1a2249; font-size: 12px; color: #a8b6ff; }
+    .footer { display: flex; justify-content: space-between; align-items: center; }
+    .nowrap { white-space: nowrap; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="card">
+      <h1>P2P Items (No Server)</h1>
+      <div class="footer">
+        <div class="muted">Local-first list that syncs peer‑to‑peer via WebRTC <span title="Manual copy/paste signaling. No servers used.">🛰️</span></div>
+        <div>
+          <span class="pill">Peer ID: <span id="peerId" class="mono"></span></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="card">
+        <h2>Items</h2>
+        <div class="flex">
+          <input id="newText" class="input" placeholder="Add a new item…" />
+          <button id="addBtn" class="btn accent">Add</button>
+        </div>
+        <div class="list" id="list"></div>
+      </div>
+
+      <div class="card">
+        <h2>Peer‑to‑Peer Linking</h2>
+        <p class="muted">1) Click <b>Create Offer</b> and send the text below to your peer (AirDrop/WhatsApp/etc). 2) Paste their <b>Answer</b> back here and click <b>Apply Answer</b>. Repeat on the other device (swap roles) to create a mesh.</p>
+        <div class="grid2">
+          <button id="createOfferBtn" class="btn">Create Offer</button>
+          <span id="connState" class="pill">disconnected</span>
+        </div>
+        <label class="muted">Your Offer (copy & share)</label>
+        <textarea id="localOffer" class="input" placeholder="Click ‘Create Offer’"></textarea>
+        <div class="flex">
+          <input id="remoteAnswer" class="input" placeholder="Paste peer’s Answer here" />
+          <button id="applyAnswerBtn" class="btn">Apply Answer</button>
+        </div>
+        <hr style="border-color:#2c3978; opacity:.4;">
+        <p class="muted">If you received an <b>Offer</b> from a peer: paste it below and click <b>Create Answer</b>, then send the produced answer back to them.</p>
+        <input id="remoteOffer" class="input" placeholder="Paste peer’s Offer here" />
+        <div class="flex">
+          <button id="createAnswerBtn" class="btn">Create Answer</button>
+          <button id="disconnectBtn" class="btn danger">Disconnect</button>
+        </div>
+        <label class="muted">Your Answer (copy & share)</label>
+        <textarea id="localAnswer" class="input" placeholder="Paste back to the peer who sent you the Offer"></textarea>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Debug</h2>
+      <div class="flex">
+        <button id="exportBtn" class="btn">Export JSON</button>
+        <button id="importBtn" class="btn">Import JSON</button>
+        <input type="file" id="filePick" hidden accept="application/json" />
+        <span class="muted">Local items are stored in IndexedDB. Sync uses id+timestamp (LWW) merge with tombstones.</span>
+      </div>
+      <div class="muted">Connections: <code class="badge" id="stats">0 peers</code></div>
+    </div>
+  </div>
+
+<script>
+(async () => {
+  // -------- Utilities --------
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const now = () => new Date().toISOString();
+  const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g,c=>(c^crypto.getRandomValues(new Uint8Array(1))[0]&15>>c/4).toString(16)));
+  const clamp = (n, a, b) => Math.max(a, Math.min(n, b));
+
+  // -------- Identity --------
+  const peerId = localStorage.getItem('peerId') || (() => { const id = uuid().slice(0,8); localStorage.setItem('peerId', id); return id; })();
+  document.getElementById('peerId').textContent = peerId;
+
+  // -------- IndexedDB (simple wrapper) --------
+  const DB_NAME = 'p2p-items-db';
+  const DB_STORE = 'items';
+  let db;
+  function openDB() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = (e) => {
+        const d = e.target.result;
+        const store = d.createObjectStore(DB_STORE, { keyPath: 'id' });
+        store.createIndex('updatedAt', 'updatedAt');
+      };
+      req.onsuccess = () => { db = req.result; resolve(); };
+      req.onerror = () => reject(req.error);
+    });
+  }
+  async function getAll() {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, 'readonly');
+      const store = tx.objectStore(DB_STORE);
+      const res = [];
+      store.openCursor().onsuccess = (e) => {
+        const c = e.target.result; if (c) { res.push(c.value); c.continue(); } else resolve(res);
+      };
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+  async function put(item) {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, 'readwrite');
+      tx.objectStore(DB_STORE).put(item);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  await openDB();
+
+  // -------- Local state & rendering --------
+  /** item: { id, text, updatedAt, deleted, author } */
+  let items = {};
+  function toArray(map) { return Object.values(map).sort((a,b) => (b.updatedAt||'').localeCompare(a.updatedAt||'')); }
+
+  async function loadFromDB() {
+    const rows = await getAll();
+    items = {};
+    for (const r of rows) items[r.id] = r;
+    render();
+  }
+
+  function render() {
+    const list = document.getElementById('list');
+    list.innerHTML = '';
+    for (const it of toArray(items)) {
+      if (it.deleted) continue; // hide tombstoned
+      const row = document.createElement('div');
+      row.className = 'item';
+      const left = document.createElement('div');
+      left.innerHTML = `<div>${escapeHtml(it.text)}</div><small>by ${it.author || 'unknown'} · ${timeAgo(it.updatedAt)}</small>`;
+      const right = document.createElement('div');
+      const del = document.createElement('button'); del.className = 'btn danger'; del.textContent = 'Delete';
+      del.onclick = () => applyOp({ type: 'delete', id: it.id });
+      right.appendChild(del);
+      row.appendChild(left); row.appendChild(right);
+      list.appendChild(row);
+    }
+  }
+
+  function escapeHtml(s='') { return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c])); }
+  function timeAgo(iso) {
+    if (!iso) return '';
+    const s = Math.floor((Date.now() - new Date(iso).getTime())/1000);
+    const units = [[31536000,'y'],[2592000,'mo'],[604800,'w'],[86400,'d'],[3600,'h'],[60,'m']];
+    for (const [sec,label] of units) if (s >= sec) return `${Math.floor(s/sec)}${label} ago`;
+    return s > 5 ? `${s}s ago` : 'just now';
+  }
+
+  // -------- Ops & Merge (LWW map with tombstones) --------
+  function makeItem(text) {
+    return { id: uuid(), text, updatedAt: now(), deleted: false, author: peerId };
+  }
+  async function applyOp(op, fromPeer=null) {
+    if (op.type === 'upsert') {
+      const cur = items[op.item.id];
+      if (!cur || (cur.updatedAt||'') < (op.item.updatedAt||'')) {
+        items[op.item.id] = op.item;
+        await put(op.item);
+        render();
+      }
+    } else if (op.type === 'delete') {
+      const cur = items[op.id];
+      const tomb = { id: op.id, text: cur ? cur.text : '', updatedAt: now(), deleted: true, author: cur?.author || peerId };
+      items[op.id] = tomb; await put(tomb); render();
+      op = { type: 'upsert', item: tomb }; // normalize broadcast as upsert of tombstone
+    }
+    // Broadcast to peers except the sender
+    broadcast(op, fromPeer);
+  }
+
+  // -------- UI events --------
+  document.getElementById('addBtn').onclick = () => {
+    const input = document.getElementById('newText');
+    const text = (input.value||'').trim(); if (!text) return;
+    const it = makeItem(text);
+    applyOp({ type: 'upsert', item: it });
+    input.value = '';
+  };
+
+  // -------- WebRTC (manual copy/paste signaling; iceServers: []) --------
+  const peers = new Map(); // id -> { pc, dc }
+  const statsEl = document.getElementById('stats');
+  function updateStats() { statsEl.textContent = `${peers.size} peer${peers.size===1?'':'s'}`; }
+
+  function newPeer() {
+    const pc = new RTCPeerConnection({ iceServers: [] }); // no STUN/TURN
+    const id = uuid().slice(0,6);
+    let dc;
+
+    pc.ondatachannel = (e) => {
+      dc = e.channel; setupDC(id, pc, dc);
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      document.getElementById('connState').textContent = pc.iceConnectionState;
+      if (['disconnected','failed','closed'].includes(pc.iceConnectionState)) {
+        peers.delete(id); updateStats();
+      }
+    };
+
+    peers.set(id, { pc, dc: null }); updateStats();
+    return { id, pc, get dc() { return dc || peers.get(id).dc; }, set dc(v){ const p = peers.get(id); p.dc = v; peers.set(id,p); } };
+  }
+
+  function setupDC(id, pc, dc) {
+    dc.binaryType = 'arraybuffer';
+    dc.onopen = () => { console.log('dc open', id); syncFull(dc); };
+    dc.onmessage = (ev) => handleMessage(ev.data, id);
+    dc.onclose = () => { peers.delete(id); updateStats(); };
+    const p = peers.get(id) || { pc };
+    p.dc = dc; peers.set(id, p); updateStats();
+  }
+
+  function broadcast(obj, exceptId=null) {
+    const data = JSON.stringify(obj);
+    for (const [id, {dc}] of peers) if (dc && dc.readyState === 'open' && id !== exceptId) dc.send(data);
+  }
+
+  async function handleMessage(data, fromId) {
+    let msg; try { msg = JSON.parse(data); } catch { return; }
+    if (msg.type === 'full-sync') {
+      // Merge full map via LWW
+      const remote = msg.items || {};
+      for (const id of Object.keys(remote)) {
+        const a = items[id]; const b = remote[id];
+        if (!a || (a.updatedAt||'') < (b.updatedAt||'')) { items[id] = b; await put(b); }
+      }
+      render();
+    } else if (msg.type === 'op') {
+      await applyOp(msg.op, fromId);
+    }
+  }
+
+  function syncFull(dc) {
+    const payload = { type: 'full-sync', items };
+    try { dc.send(JSON.stringify(payload)); } catch {}
+  }
+
+  // --- Signaling helpers (copy/paste) ---
+  async function createOffer() {
+    const { id, pc } = newPeer();
+    const dc = pc.createDataChannel('data');
+    setupDC(id, pc, dc);
+    const offer = await pc.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false });
+    await pc.setLocalDescription(offer);
+    // Wait for ICE gathering complete to embed candidates in SDP
+    await waitForIceGathering(pc);
+    document.getElementById('localOffer').value = b64(JSON.stringify({ sdp: pc.localDescription }));
+  }
+
+  async function applyAnswer() {
+    const answerText = document.getElementById('remoteAnswer').value.trim();
+    if (!answerText) return alert('Paste an Answer');
+    const { pc } = Array.from(peers.values())[peers.size - 1] || {};
+    if (!pc) return alert('No pending peer. Click Create Offer first.');
+    const { sdp } = JSON.parse(ub64(answerText));
+    await pc.setRemoteDescription(sdp);
+    document.getElementById('remoteAnswer').value = '';
+  }
+
+  async function createAnswer() {
+    const offerText = document.getElementById('remoteOffer').value.trim();
+    if (!offerText) return alert('Paste an Offer');
+    const { id, pc } = newPeer();
+    const { sdp: offer } = JSON.parse(ub64(offerText));
+    await pc.setRemoteDescription(offer);
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    await waitForIceGathering(pc);
+    document.getElementById('localAnswer').value = b64(JSON.stringify({ sdp: pc.localDescription }));
+  }
+
+  function disconnectAll() {
+    for (const [id, {pc}] of peers) { try { pc.close(); } catch {} }
+    peers.clear(); updateStats();
+    document.getElementById('connState').textContent = 'disconnected';
+  }
+
+  function waitForIceGathering(pc) {
+    return new Promise((resolve) => {
+      if (pc.iceGatheringState === 'complete') return resolve();
+      const check = () => pc.iceGatheringState === 'complete' && resolve();
+      pc.addEventListener('icegatheringstatechange', check);
+      // Safety timeout in case some browsers stall
+      setTimeout(resolve, 1500);
+    });
+  }
+
+  function b64(s) { return btoa(unescape(encodeURIComponent(s))); }
+  function ub64(s) { return decodeURIComponent(escape(atob(s))); }
+
+  // -------- Export / Import --------
+  document.getElementById('exportBtn').onclick = async () => {
+    const blob = new Blob([JSON.stringify({ items }, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `p2p-items-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
+    a.click();
+  };
+  document.getElementById('importBtn').onclick = () => document.getElementById('filePick').click();
+  document.getElementById('filePick').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    const text = await f.text();
+    let obj; try { obj = JSON.parse(text); } catch { return alert('Invalid JSON'); }
+    if (obj && obj.items) {
+      for (const it of Object.values(obj.items)) { await put(it); items[it.id] = it; }
+      render();
+      broadcast({ type: 'full-sync', items });
+    }
+  };
+
+  // -------- Buttons wiring --------
+  document.getElementById('createOfferBtn').onclick = createOffer;
+  document.getElementById('applyAnswerBtn').onclick = applyAnswer;
+  document.getElementById('createAnswerBtn').onclick = createAnswer;
+  document.getElementById('disconnectBtn').onclick = disconnectAll;
+
+  // -------- Init --------
+  await loadFromDB();
+})();
+</script>
+</body>
+</html>
