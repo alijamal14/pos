@@ -680,10 +680,21 @@
     console.log('=== SAVING CURRENT FRAME ===');
     const video = document.getElementById('qrVideo');
     const canvas = document.getElementById('qrCanvas');
-    const ctx = canvas.getContext('2d');
     
     if (!video || !canvas) {
       console.log('Video or canvas not found');
+      return;
+    }
+    
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      console.log('Could not get canvas context');
+      return;
+    }
+    
+    // Check if canvas has valid dimensions
+    if (canvas.width === 0 || canvas.height === 0) {
+      console.log('Canvas has invalid dimensions:', canvas.width, 'x', canvas.height);
       return;
     }
     
@@ -699,6 +710,11 @@
     
     // Convert to blob and download
     canvas.toBlob(function(blob) {
+      if (!blob) {
+        console.log('Failed to create blob from canvas');
+        return;
+      }
+      
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -782,6 +798,12 @@
       scannerStream = null;
     }
 
+    // Remove canvas to prevent memory leaks
+    const canvas = document.getElementById('qrCanvas');
+    if (canvas) {
+      canvas.remove();
+    }
+
     // Remove modal
     const modal = document.getElementById('qrScannerModal');
     if (modal) {
@@ -833,6 +855,7 @@
       detectCameraType(stream);
       
       const video = document.createElement('video');
+      video.id = 'qrVideo'; // Add missing ID for toggle mirror functionality
       video.srcObject = stream;
       video.setAttribute('playsinline', ''); // Required for iOS
       video.setAttribute('autoplay', ''); // Ensure autoplay
@@ -991,6 +1014,9 @@
 
   function startScanning(videoElement, targetInputId) {
     const canvas = document.createElement('canvas');
+    canvas.id = 'qrCanvas'; // Add missing ID for save frame functionality
+    canvas.style.display = 'none'; // Hide the canvas since it's only used for processing
+    document.body.appendChild(canvas); // Add canvas to DOM so it can be found by getElementById
     const ctx = canvas.getContext('2d', { willReadFrequently: true }); // Fix performance warning
     
     // Add scan counter for debugging
