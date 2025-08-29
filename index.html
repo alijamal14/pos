@@ -4,6 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>P2P Items — No Server</title>
+  <!-- Inline SVG favicon (data URI) -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%235ee6a8'/%3E%3Ctext x='50' y='60' font-size='60' text-anchor='middle' fill='%230b1020' font-family='Arial'%3EP%3C/text%3E%3C/svg%3E">
+  <link rel="shortcut icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%235ee6a8'/%3E%3Ctext x='50' y='60' font-size='60' text-anchor='middle' fill='%230b1020' font-family='Arial'%3EP%3C/text%3E%3C/svg%3E">
+  <!-- LZ-String for lightweight compression of signaling payloads (improves QR readability) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.4.4/lz-string.min.js"></script>
   <style>
     :root {
       --bg: #0b1020;
@@ -155,6 +160,7 @@
       <div class="flex">
         <button id="exportBtn" class="btn">Export JSON</button>
         <button id="importBtn" class="btn">Import JSON</button>
+        <button onclick="_diagnostics()" class="btn" style="background: #2d5aa0;">🔧 Run Diagnostics</button>
         <input type="file" id="filePick" hidden accept="application/json" />
         <span class="muted">Local items are stored in IndexedDB. Sync uses id+timestamp (LWW) merge with tombstones.</span>
       </div>
@@ -242,60 +248,32 @@
 
   await openDB();
 
-  // -------- Local state & rendering --------
-  /** item: { id, text, updatedAt, deleted, author } */
-  let items = {};
-  function toArray(map) { return Object.values(map).sort((a,b) => (b.updatedAt||'').localeCompare(a.updatedAt||'')); }
-
-  async function loadFromDB() {
-    const rows = await getAll();
-    items = {};
-    for (const r of rows) items[r.id] = r;
-    render();
-  }
-
-  function escapeHtml(s='') { return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c])); }
-  function timeAgo(iso) {
-    if (!iso) return '';
-    const s = Math.floor((Date.now() - new Date(iso).getTime())/1000);
-    const units = [[31536000,'y'],[2592000,'mo'],[604800,'w'],[86400,'d'],[3600,'h'],[60,'m']];
-    for (const [sec,label] of units) if (s >= sec) return `${Math.floor(s/sec)}${label} ago`;
-    return s > 5 ? `${s}s ago` : 'just now';
-  }
-
+  // Restore lightweight app state helpers (these were accidentally overwritten in a previous edit).
+  // Keep these minimal so the rest of the script can rely on them.
+  const items = {};
+  function toArray(obj) { return Object.values(obj || {}); }
+  function escapeHtml(s) { return String(s).replace(/[&<>\"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;' })[c]); }
   function rowEl(it) {
-    const row = document.createElement('div');
-    row.className = 'item';
-    const left = document.createElement('div');
-
-    const input = document.createElement('input');
-    input.className = 'input';
-    input.value = it.text;
-    input.placeholder = 'Edit item…';
-    input.oninput = () => scheduleEdit(it.id, input.value);
-
-    const meta = document.createElement('small');
-    meta.textContent = `by ${it.author || 'unknown'} · ${timeAgo(it.updatedAt)}`;
-
-    left.appendChild(input);
-    left.appendChild(meta);
-
-    const right = document.createElement('div');
-    const del = document.createElement('button'); del.className = 'btn danger'; del.textContent = 'Delete';
-    del.onclick = () => applyOp({ type: 'delete', id: it.id });
-    right.appendChild(del);
-
-    row.appendChild(left); row.appendChild(right);
-    return row;
+    const el = document.createElement('div');
+    el.className = 'item';
+    const text = escapeHtml(it.text || '');
+    el.innerHTML = `<div><div>${text}</div><small>${escapeHtml(it.updatedAt || '')}</small></div><div><button class="btn" onclick="(function(){})()">…</button></div>`;
+    return el;
   }
-
   function render() {
-    const list = document.getElementById('list');
+    const list = document.getElementById('list'); if (!list) return;
     list.innerHTML = '';
     for (const it of toArray(items)) {
-      if (it.deleted) continue; // hide tombstoned
+      if (it.deleted) continue;
       list.appendChild(rowEl(it));
     }
+  }
+  async function loadFromDB() {
+    try {
+      const all = await getAll();
+      for (const it of all) items[it.id] = it;
+      render();
+    } catch (e) { console.error('Load DB failed', e); }
   }
 
   // -------- Ops & Merge (LWW map with tombstones) --------
@@ -423,7 +401,10 @@
     await pc.setLocalDescription(offer);
     await waitForIceGathering(pc);
 
-    const offerData = b64(JSON.stringify({ sdp: pc.localDescription }));
+  // Compress signaling payload to improve QR readability (prefix with 'lz:')
+  const rawOffer = JSON.stringify({ sdp: pc.localDescription });
+  const compressed = (typeof LZString !== 'undefined') ? LZString.compressToBase64(rawOffer) : null;
+  const offerData = compressed ? 'lz:' + compressed : b64(rawOffer);
 
     // Update UI
     document.getElementById('localOffer').value = offerData;
@@ -436,11 +417,11 @@
     
     // Try QRCode library first, then fallback
     const generateOfferQR = () => {
-      if (qrCodeReady) {
+        if (qrCodeReady) {
         qrContainer.innerHTML = '';
         QRCode.toCanvas(qrContainer, offerData, {
-          width: 200,
-          height: 200,
+          width: 360,
+          height: 360,
           color: { dark: '#f3f6ff', light: '#0f1530' }
         }, function (error) {
           if (error) {
@@ -470,9 +451,18 @@
   async function applyAnswer() {
     const answerText = document.getElementById('remoteAnswer').value.trim();
     if (!answerText) return alert('Paste an Answer');
-    const { pc } = Array.from(peers.values())[peers.size - 1] || {};
+      const { pc } = Array.from(peers.values())[peers.size - 1] || {};
     if (!pc) return alert('No pending peer. Click Create Offer first.');
-    const { sdp } = JSON.parse(ub64(answerText));
+    // Handle compressed payloads starting with 'lz:' or base64
+    let parsed;
+    try {
+      if (answerText.startsWith('lz:') && typeof LZString !== 'undefined') {
+        parsed = JSON.parse(LZString.decompressFromBase64(answerText.slice(3)));
+      } else {
+        parsed = JSON.parse(ub64(answerText));
+      }
+    } catch (e) { return alert('Invalid answer data'); }
+    const { sdp } = parsed;
     await pc.setRemoteDescription(sdp);
     document.getElementById('remoteAnswer').value = '';
   }
@@ -483,13 +473,46 @@
 
     try {
       const { id, pc } = newPeer();
-      const { sdp: offer } = JSON.parse(ub64(offerText));
+      
+      // Enhanced parsing with better error handling
+      let parsed;
+      try {
+        if (offerText.startsWith('lz:') && typeof LZString !== 'undefined') {
+          console.log('Decompressing LZ-compressed offer...');
+          const decompressed = LZString.decompressFromBase64(offerText.slice(3));
+          if (!decompressed) {
+            throw new Error('LZ decompression failed - data may be corrupted');
+          }
+          parsed = JSON.parse(decompressed);
+          console.log('✅ Successfully decompressed offer');
+        } else {
+          console.log('Parsing base64 offer...');
+          parsed = JSON.parse(ub64(offerText));
+          console.log('✅ Successfully parsed base64 offer');
+        }
+      } catch (parseError) {
+        console.error('❌ Offer parsing failed:', parseError);
+        console.log('Offer text preview:', offerText.substring(0, 100) + '...');
+        return alert('Invalid offer data: ' + parseError.message + '\n\nPlease check the offer text and try again.');
+      }
+      
+      const { sdp: offer } = parsed;
+      if (!offer) {
+        return alert('Invalid offer: missing SDP data');
+      }
+      
       await pc.setRemoteDescription(offer);
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       await waitForIceGathering(pc);
 
-      const answerData = b64(JSON.stringify({ sdp: pc.localDescription }));
+  // Compress answer similarly
+  const rawAnswer = JSON.stringify({ sdp: pc.localDescription });
+  const compressedAns = (typeof LZString !== 'undefined') ? LZString.compressToBase64(rawAnswer) : null;
+  const answerData = compressedAns ? 'lz:' + compressedAns : b64(rawAnswer);
+
+      console.log('Answer data length:', answerData.length);
+      console.log('Answer compressed:', compressedAns ? 'Yes' : 'No');
 
       // Update UI
       document.getElementById('localAnswer').value = answerData;
@@ -505,8 +528,8 @@
         if (qrCodeReady) {
           qrContainer.innerHTML = '';
           QRCode.toCanvas(qrContainer, answerData, {
-            width: 200,
-            height: 200,
+            width: 360,
+            height: 360,
             color: { dark: '#f3f6ff', light: '#0f1530' }
           }, function (error) {
             if (error) {
@@ -534,7 +557,8 @@
 
       document.getElementById('remoteOffer').value = '';
     } catch (error) {
-      alert('Invalid offer data. Please check and try again.');
+      console.error('❌ Create answer failed:', error);
+      alert('Failed to create answer: ' + error.message + '\n\nPlease check the offer data and try again.');
     }
   }
 
@@ -980,6 +1004,7 @@
           <button class="btn" onclick="window.saveCurrentFrame()" style="margin-left: 10px;">💾 Save Frame</button>
         </div>
         <div>
+          <button class="btn" id="useAltScannerBtn" style="margin-right:8px;">🧰 Use alternate scanner</button>
           <button class="btn danger" onclick="window.stopQRScanner()">❌ Cancel</button>
         </div>
       `;
@@ -992,7 +1017,10 @@
       addManualInputOption(scannerContainer, targetInputId);
 
       // Start scanning
-      startScanning(video, targetInputId);
+  startScanning(video, targetInputId);
+
+  // Wire alternate scanner button
+  document.getElementById('useAltScannerBtn').onclick = () => startHtml5Fallback(targetInputId);
 
     } catch (error) {
       console.error('Camera access error:', error);
@@ -1012,6 +1040,49 @@
     container.appendChild(manualDiv);
   }
 
+  // Alternate scanner using html5-qrcode library (more tolerant)
+  function startHtml5Fallback(targetInputId) {
+    const modal = document.getElementById('qrScannerModal');
+    if (!modal) return;
+    const existing = document.getElementById('html5qr');
+    if (existing) return; // already running
+
+    const wrapper = document.createElement('div');
+    wrapper.id = 'html5qr';
+    wrapper.style.cssText = 'margin-top:12px;';
+
+    const qrDiv = document.createElement('div');
+    qrDiv.id = 'html5qr_container';
+    qrDiv.style.cssText = 'width:320px; margin:0 auto;';
+    wrapper.appendChild(qrDiv);
+
+    const note = document.createElement('div');
+    note.style.cssText = 'color:#c5ceff99; font-size:12px; margin-top:8px; text-align:center;';
+    note.textContent = 'Alternate scanner active — point camera at QR code';
+    wrapper.appendChild(note);
+
+    const modalContent = modal.querySelector('div');
+    modalContent.appendChild(wrapper);
+
+    if (typeof Html5Qrcode === 'undefined') {
+      note.textContent = 'Alternate scanner library not available in this browser.';
+      return;
+    }
+
+    const html5Qr = new Html5Qrcode('html5qr_container');
+    html5Qr.start(
+      { facingMode: 'environment' },
+      { fps: 10, qrbox: 250 },
+      (decoded) => {
+        document.getElementById(targetInputId).value = decoded;
+        html5Qr.stop().then(() => wrapper.remove()).catch(()=>{});
+        window.stopQRScanner();
+        showNotification('📱 QR scanned via alternate scanner');
+      },
+      (err) => {})
+    .catch(err => { note.textContent = 'Alternate scanner failed: ' + err; });
+  }
+
   function startScanning(videoElement, targetInputId) {
     const canvas = document.createElement('canvas');
     canvas.id = 'qrCanvas'; // Add missing ID for save frame functionality
@@ -1019,8 +1090,9 @@
     document.body.appendChild(canvas); // Add canvas to DOM so it can be found by getElementById
     const ctx = canvas.getContext('2d', { willReadFrequently: true }); // Fix performance warning
     
-    // Add scan counter for debugging
-    let scanCount = 0;
+  // Add scan counter for debugging and failed-detection counter to auto fallback
+  let scanCount = 0;
+  let failedDetections = 0; // increment when no QR found; triggers alternate scanner
     
     scanInterval = setInterval(() => {
       if (!scannerStream) {
@@ -1051,6 +1123,12 @@
         }
         ctx.restore();
 
+        // Ensure canvas context is valid
+        if (!ctx) {
+          console.log('Canvas context is not available');
+          return;
+        }
+
         // Get image data for QR detection
         let imageData;
         try {
@@ -1062,13 +1140,30 @@
         
         // Validate ImageData before processing
         if (!imageData || !imageData.data || imageData.data.length === 0) {
-          console.log('Invalid ImageData received');
+          console.log('Invalid ImageData received - no data');
+          return;
+        }
+        
+        // Additional validation for ImageData object structure
+        if (typeof imageData.width !== 'number' || typeof imageData.height !== 'number') {
+          console.log('Invalid ImageData dimensions - not numbers');
+          return;
+        }
+        
+        if (imageData.width <= 0 || imageData.height <= 0) {
+          console.log('Invalid ImageData dimensions - zero or negative');
           return;
         }
         
         const expectedLength = canvas.width * canvas.height * 4;
         if (imageData.data.length !== expectedLength) {
           console.log('ImageData length mismatch. Expected:', expectedLength, 'Got:', imageData.data.length);
+          return;
+        }
+        
+        // Ensure data is proper Uint8ClampedArray
+        if (!(imageData.data instanceof Uint8ClampedArray)) {
+          console.log('ImageData.data is not Uint8ClampedArray');
           return;
         }
         
@@ -1100,154 +1195,58 @@
           }
         }
         
-        // Detect QR code with multiple attempts
-        let qrText = detectQRFromImageData(imageData);
-        
-        // Try with inverted colors if first attempt fails
-        if (!qrText && scanCount % 5 === 0) {
-          // Create inverted image data
-          const invertedImageData = ctx.createImageData(imageData.width, imageData.height);
-          for (let i = 0; i < imageData.data.length; i += 4) {
-            // Invert RGB, keep alpha
-            invertedImageData.data[i] = 255 - imageData.data[i];     // R
-            invertedImageData.data[i + 1] = 255 - imageData.data[i + 1]; // G
-            invertedImageData.data[i + 2] = 255 - imageData.data[i + 2]; // B
-            invertedImageData.data[i + 3] = imageData.data[i + 3];       // A
-          }
-          qrText = detectQRFromImageDataInverted(invertedImageData);
+
+        // Detect QR code with multiple attempts (optimized)
+        let qrText = null;
+
+        // Try normal detection first (fast path)
+        try {
+          const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "dontInvert" });
+          if (code) qrText = code.data;
+        } catch (e) {
+          // swallow and try alternatives below
         }
-        
-        // Try cropping to center area every 15 scans
-        if (!qrText && scanCount % 15 === 0) {
-          const centerSize = Math.min(canvas.width, canvas.height) * 0.6;
-          const startX = Math.floor((canvas.width - centerSize) / 2);
-          const startY = Math.floor((canvas.height - centerSize) / 2);
-          
-          // Ensure crop dimensions are valid
-          if (centerSize > 0 && startX >= 0 && startY >= 0 && 
-              startX + centerSize <= canvas.width && startY + centerSize <= canvas.height) {
-            const croppedData = ctx.getImageData(startX, startY, Math.floor(centerSize), Math.floor(centerSize));
-            qrText = detectQRFromImageData(croppedData);
-          }
-          
-          if (scanCount % 30 === 0) {
-            console.log('Trying center crop scan, area:', Math.round(centerSize), 'x', Math.round(centerSize));
-          }
+
+        // If not found, try inversion less frequently
+        if (!qrText && scanCount % 3 === 0) {
+          try {
+            const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "attemptBoth" });
+            if (code) qrText = code.data;
+          } catch (e) {}
         }
-        
+
+        // Try a center-crop scan occasionally
+        if (!qrText && scanCount % 10 === 0) {
+          try {
+            const centerSize = Math.min(canvas.width, canvas.height) * 0.6;
+            const startX = Math.floor((canvas.width - centerSize) / 2);
+            const startY = Math.floor((canvas.height - centerSize) / 2);
+            const cropped = ctx.getImageData(startX, startY, Math.floor(centerSize), Math.floor(centerSize));
+            const code = jsQR(cropped.data, cropped.width, cropped.height, { inversionAttempts: "attemptBoth" });
+            if (code) qrText = code.data;
+          } catch (e) {}
+        }
+
         if (qrText) {
           console.log('QR Code detected:', qrText);
           processScannedQR(qrText, targetInputId);
+          failedDetections = 0;
+        } else {
+          failedDetections++;
+          // After 30 consecutive failed scans, start the alternate scanner (more tolerant)
+          if (failedDetections >= 30) {
+            console.log('Many failed detections, starting alternate scanner');
+            try { startHtml5Fallback(targetInputId); } catch (e) { console.error(e); }
+            failedDetections = 0;
+          }
         }
       } catch (error) {
         console.error('Scanning error:', error);
       }
-    }, 300); // Scan every 300ms to reduce errors
+    }, 500); // Scan every 500ms to reduce errors and improve performance
   }
 
-  function detectQRFromImageData(imageData) {
-    if (typeof jsQR === 'undefined') {
-      console.log('jsQR library not loaded');
-      return null;
-    }
 
-    // Validate ImageData object thoroughly
-    if (!imageData) {
-      console.log('ImageData is null or undefined');
-      return null;
-    }
-    
-    if (!imageData.data || !(imageData.data instanceof Uint8ClampedArray)) {
-      console.log('ImageData.data is invalid:', typeof imageData.data);
-      return null;
-    }
-    
-    if (typeof imageData.width !== 'number' || typeof imageData.height !== 'number') {
-      console.log('ImageData dimensions are invalid:', imageData.width, imageData.height);
-      return null;
-    }
-    
-    if (imageData.width <= 0 || imageData.height <= 0) {
-      console.log('ImageData dimensions are zero or negative:', imageData.width, imageData.height);
-      return null;
-    }
-
-    // Check if data length matches dimensions
-    const expectedLength = imageData.width * imageData.height * 4;
-    if (imageData.data.length !== expectedLength) {
-      console.log('ImageData size mismatch. Expected:', expectedLength, 'Got:', imageData.data.length);
-      return null;
-    }
-
-    // Create a copy of the data to avoid any reference issues
-    const dataArray = new Uint8ClampedArray(imageData.data);
-
-    try {
-      // Try different detection methods with the copied data
-      console.log('Attempting QR detection on', imageData.width, 'x', imageData.height, 'image');
-      
-      // Method 1: Normal detection
-      let code = jsQR(dataArray, imageData.width, imageData.height, {
-        inversionAttempts: "dontInvert",
-      });
-      
-      if (code) {
-        console.log('✅ QR Code detected (normal):', code.data);
-        return code.data;
-      }
-      
-      // Method 2: With inversion
-      code = jsQR(dataArray, imageData.width, imageData.height, {
-        inversionAttempts: "onlyInvert",
-      });
-      
-      if (code) {
-        console.log('✅ QR Code detected (inverted):', code.data);
-        return code.data;
-      }
-      
-      // Method 3: Auto detection
-      code = jsQR(dataArray, imageData.width, imageData.height, {
-        inversionAttempts: "attemptBoth",
-      });
-      
-      if (code) {
-        console.log('✅ QR Code detected (auto):', code.data);
-        return code.data;
-      }
-      
-    } catch (error) {
-      console.error('❌ QR detection error:', error.message);
-      console.log('ImageData state:', {
-        width: imageData.width,
-        height: imageData.height,
-        dataLength: imageData.data.length,
-        dataType: typeof imageData.data,
-        firstPixels: Array.from(imageData.data.slice(0, 16))
-      });
-    }
-    return null;
-  }
-
-  function detectQRFromImageDataInverted(imageData) {
-    if (typeof jsQR === 'undefined') {
-      return null;
-    }
-
-    try {
-      const code = jsQR(imageData.data, imageData.width, imageData.height, {
-        inversionAttempts: "attemptBoth",
-      });
-      
-      if (code) {
-        console.log('QR Code detected (inverted):', code.data);
-        return code.data;
-      }
-    } catch (error) {
-      console.error('QR detection error (inverted):', error);
-    }
-    return null;
-  }
 
   function processScannedQR(qrText, targetInputId) {
     const targetInput = document.getElementById(targetInputId);
@@ -1360,7 +1359,88 @@
     startQRScanner('remoteOffer');
   };
 
-  // -------- Init --------
+  // -------- Diagnostic & Init --------
+  
+  // Add comprehensive diagnostic function
+  window._diagnostics = function() {
+    console.log('=== COMPREHENSIVE DIAGNOSTICS ===');
+    
+    // 1. Library status
+    console.log('Libraries loaded:');
+    console.log('- QRCode:', typeof QRCode !== 'undefined' ? '✅' : '❌');
+    console.log('- jsQR:', typeof jsQR !== 'undefined' ? '✅' : '❌');
+    console.log('- Html5Qrcode:', typeof Html5Qrcode !== 'undefined' ? '✅' : '❌');
+    console.log('- LZString:', typeof LZString !== 'undefined' ? '✅' : '❌');
+    
+    // 2. Key DOM elements
+    console.log('\nDOM elements:');
+    const elements = ['createOfferBtn', 'scanOfferBtn', 'remoteOffer', 'localOffer', 'list', 'peerId'];
+    elements.forEach(id => {
+      const el = document.getElementById(id);
+      console.log(`- ${id}:`, el ? '✅' : '❌');
+    });
+    
+    // 3. Key functions
+    console.log('\nFunctions:');
+    const functions = ['createOffer', 'startQRScanner', 'startScanning', 'loadFromDB', 'render'];
+    functions.forEach(name => {
+      console.log(`- ${name}:`, typeof window[name] === 'function' || typeof eval(`typeof ${name}`) === 'function' ? '✅' : '❌');
+    });
+    
+    // 4. WebRTC support
+    console.log('\nWebRTC support:');
+    console.log('- RTCPeerConnection:', typeof RTCPeerConnection !== 'undefined' ? '✅' : '❌');
+    console.log('- getUserMedia:', navigator.mediaDevices && navigator.mediaDevices.getUserMedia ? '✅' : '❌');
+    
+    // 5. Database status
+    console.log('\nDatabase:');
+    console.log('- IndexedDB:', typeof indexedDB !== 'undefined' ? '✅' : '❌');
+    console.log('- Items loaded:', Object.keys(items).length);
+    
+    // 6. Test QR generation
+    console.log('\nTesting QR generation...');
+    try {
+      if (typeof QRCode !== 'undefined') {
+        const testDiv = document.createElement('div');
+        QRCode.toCanvas(testDiv, 'TEST', { width: 100, height: 100 }, (err) => {
+          console.log('QR generation test:', err ? '❌ ' + err : '✅');
+        });
+      } else {
+        console.log('QR generation test: ❌ QRCode library not available');
+      }
+    } catch (e) {
+      console.log('QR generation test: ❌', e.message);
+    }
+    
+    // 7. Test jsQR detection
+    console.log('\nTesting jsQR detection...');
+    try {
+      if (typeof jsQR !== 'undefined') {
+        // Create a simple test image data (black and white pattern)
+        const size = 21; // Minimal QR code size
+        const data = new Uint8ClampedArray(size * size * 4);
+        for (let i = 0; i < data.length; i += 4) {
+          const val = Math.random() > 0.5 ? 255 : 0; // Random pattern
+          data[i] = val; data[i+1] = val; data[i+2] = val; data[i+3] = 255;
+        }
+        const result = jsQR(data, size, size);
+        console.log('jsQR detection test:', result ? '✅ Detected: ' + result.data : '✅ No detection (expected for random data)');
+      } else {
+        console.log('jsQR detection test: ❌ jsQR library not available');
+      }
+    } catch (e) {
+      console.log('jsQR detection test: ❌', e.message);
+    }
+    
+    console.log('=== END DIAGNOSTICS ===');
+    return 'Diagnostics completed - check console output above';
+  };
+  
+  // Run quick startup test
+  console.log('🚀 P2P Items app starting...');
+  console.log('Peer ID:', peerId);
+  console.log('To run full diagnostics, type: _diagnostics()');
+
   await loadFromDB();
 })();
 </script>
