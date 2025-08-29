@@ -162,6 +162,8 @@
     </div>
   <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+  <!-- Backup QR scanner library -->
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/minified/html5-qrcode.min.js"></script>
   <script>
 (async () => {
   // Wait for QR code library to load
@@ -618,8 +620,153 @@
   // --- QR Scanner ---
   let scannerStream = null;
   let scanInterval = null;
+  let isMirrored = false; // Track mirror state
+  let isBackCamera = false; // Track camera type
+
+  // Auto-detect camera type and set initial mirror state
+  function detectCameraType(stream) {
+    const videoTrack = stream.getVideoTracks()[0];
+    if (videoTrack) {
+      const settings = videoTrack.getSettings();
+      const capabilities = videoTrack.getCapabilities();
+      
+      console.log('Camera settings:', settings);
+      console.log('Camera capabilities:', capabilities);
+      
+      // Try to detect if it's a back camera
+      if (settings.facingMode) {
+        isBackCamera = settings.facingMode === 'environment';
+        console.log('Camera facing mode:', settings.facingMode);
+      } else if (videoTrack.label) {
+        // Check label for back camera indicators
+        const label = videoTrack.label.toLowerCase();
+        isBackCamera = label.includes('back') || label.includes('rear') || label.includes('environment');
+        console.log('Camera label:', videoTrack.label, 'isBackCamera:', isBackCamera);
+      }
+      
+      // Set initial mirror state: mirror for front cameras, no mirror for back cameras
+      isMirrored = !isBackCamera;
+      console.log('Initial mirror state:', isMirrored ? 'ON' : 'OFF');
+      
+      return isBackCamera;
+    }
+    return false;
+  }
+
+  function updateMirrorState(videoElement) {
+    // Update video element mirroring
+    if (videoElement) {
+      videoElement.style.transform = isMirrored ? 'scaleX(-1)' : 'scaleX(1)';
+    }
+    
+    // Update mirror button text
+    const mirrorBtn = document.getElementById('mirrorBtn');
+    if (mirrorBtn) {
+      mirrorBtn.textContent = isMirrored ? '🪞 Mirror: ON' : '🪞 Mirror: OFF';
+      mirrorBtn.title = isMirrored ? 'Click to turn off mirroring' : 'Click to turn on mirroring';
+    }
+  }
+
+  window.toggleMirror = function() {
+    isMirrored = !isMirrored;
+    console.log('Mirror toggled:', isMirrored ? 'ON' : 'OFF');
+    
+    const video = document.getElementById('qrVideo');
+    updateMirrorState(video);
+  };
 
   // Make functions globally accessible
+  window.saveCurrentFrame = function() {
+    console.log('=== SAVING CURRENT FRAME ===');
+    const video = document.getElementById('qrVideo');
+    const canvas = document.getElementById('qrCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    if (!video || !canvas) {
+      console.log('Video or canvas not found');
+      return;
+    }
+    
+    // Draw current frame with mirror state
+    ctx.save();
+    if (isMirrored) {
+      ctx.scale(-1, 1);
+      ctx.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
+    } else {
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    }
+    ctx.restore();
+    
+    // Convert to blob and download
+    canvas.toBlob(function(blob) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'qr-scanner-frame.png';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      console.log('Frame saved as qr-scanner-frame.png');
+    });
+  };
+
+  window.manualDetectionTest = function() {
+    console.log('=== MANUAL DETECTION TEST ===');
+    const video = document.getElementById('qrVideo');
+    const canvas = document.getElementById('qrCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    if (!video || !canvas) {
+      console.log('Video or canvas not found');
+      return;
+    }
+    
+    console.log('Video ready state:', video.readyState);
+    console.log('Video dimensions:', video.videoWidth, 'x', video.videoHeight);
+    console.log('Canvas dimensions:', canvas.width, 'x', canvas.height);
+    
+    // Draw current frame
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    
+    console.log('Image data length:', imageData.data.length);
+    console.log('First 20 pixels (RGBA):', Array.from(imageData.data.slice(0, 80)));
+    
+    // Try detection with different methods
+    console.log('Testing jsQR detection...');
+    
+    if (typeof jsQR !== 'undefined') {
+      // Test 1: Normal
+      const result1 = jsQR(imageData.data, imageData.width, imageData.height);
+      console.log('Normal detection result:', result1);
+      
+      // Test 2: With inversion
+      const result2 = jsQR(imageData.data, imageData.width, imageData.height, {
+        inversionAttempts: "attemptBoth"
+      });
+      console.log('Inversion detection result:', result2);
+      
+      // Test 3: Manual threshold
+      const grayscaleData = new Uint8ClampedArray(imageData.data.length);
+      for (let i = 0; i < imageData.data.length; i += 4) {
+        const gray = Math.round(0.299 * imageData.data[i] + 0.587 * imageData.data[i + 1] + 0.114 * imageData.data[i + 2]);
+        const binary = gray > 128 ? 255 : 0;
+        grayscaleData[i] = binary;
+        grayscaleData[i + 1] = binary;
+        grayscaleData[i + 2] = binary;
+        grayscaleData[i + 3] = imageData.data[i + 3];
+      }
+      
+      const result3 = jsQR(grayscaleData, imageData.width, imageData.height);
+      console.log('Binary threshold detection result:', result3);
+    } else {
+      console.log('jsQR library not available');
+    }
+    
+    console.log('=== END MANUAL TEST ===');
+  };
+
   window.stopQRScanner = function() {
     console.log('Stopping QR scanner');
 
@@ -656,15 +803,35 @@
     console.log('Starting QR scanner for:', targetInputId);
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: 'environment',
-          width: { ideal: 640 },
-          height: { ideal: 480 }
-        }
-      });
+      // Try back camera first (better for QR scanning)
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: 'environment', // Back camera
+            width: { ideal: 640 },
+            height: { ideal: 480 }
+          }
+        });
+        console.log('✅ Back camera acquired');
+      } catch (e) {
+        console.log('Back camera not available, trying front camera:', e.message);
+        // Fallback to front camera
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: 'user', // Front camera
+            width: { ideal: 640 },
+            height: { ideal: 480 }
+          }
+        });
+        console.log('✅ Front camera acquired');
+      }
 
       scannerStream = stream;
+      
+      // Detect camera type and set initial mirror state
+      detectCameraType(stream);
+      
       const video = document.createElement('video');
       video.srcObject = stream;
       video.setAttribute('playsinline', ''); // Required for iOS
@@ -674,6 +841,9 @@
       video.style.maxWidth = '300px';
       video.style.borderRadius = '8px';
       video.style.background = '#000';
+      
+      // Set initial mirroring based on camera type
+      updateMirrorState(video);
 
       // Wait for video to be ready
       await new Promise((resolve) => {
@@ -761,10 +931,35 @@
       instructions.style.cssText = 'color: #8aa0ff; font-size: 14px; margin: 16px 0;';
       scannerContainer.appendChild(instructions);
 
+      // Add test section for debugging
+      const testSection = document.createElement('div');
+      testSection.style.cssText = 'margin: 8px 0; padding: 8px; background: #1a2249; border-radius: 8px;';
+      testSection.innerHTML = `
+        <details style="color: #8aa0ff;">
+          <summary style="cursor: pointer; font-size: 12px;">🔧 Test Scanner</summary>
+          <div style="margin-top: 8px;">
+            <p style="font-size: 11px; margin: 4px 0;">Test with this simple text: <strong style="color: #f3f6ff;">Hello World</strong></p>
+            <img src="https://api.qrserver.com/v1/create-qr-code/?size=80x80&data=Hello%20World" 
+                 style="width: 60px; height: 60px; margin: 4px; border: 1px solid #5ee6a8;">
+            <p style="font-size: 11px; color: #c5ceff99;">Hold this QR code up to your camera to test scanning</p>
+          </div>
+        </details>
+      `;
+      scannerContainer.appendChild(testSection);
+
       // Add controls
       const controls = document.createElement('div');
       controls.style.cssText = 'margin-top: 16px;';
-      controls.innerHTML = '<button class="btn danger" onclick="window.stopQRScanner()">❌ Cancel</button>';
+      controls.innerHTML = `
+        <div style="margin-bottom: 10px;">
+          <button class="btn" onclick="window.toggleMirror()" id="mirrorBtn">🪞 Toggle Mirror</button>
+          <button class="btn primary" onclick="window.manualDetectionTest()" style="margin-left: 10px;">🔍 Test Detection</button>
+          <button class="btn" onclick="window.saveCurrentFrame()" style="margin-left: 10px;">💾 Save Frame</button>
+        </div>
+        <div>
+          <button class="btn danger" onclick="window.stopQRScanner()">❌ Cancel</button>
+        </div>
+      `;
       scannerContainer.appendChild(controls);
 
       modal.appendChild(scannerContainer);
@@ -798,6 +993,9 @@
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d', { willReadFrequently: true }); // Fix performance warning
     
+    // Add scan counter for debugging
+    let scanCount = 0;
+    
     scanInterval = setInterval(() => {
       if (!scannerStream) {
         clearInterval(scanInterval);
@@ -810,15 +1008,106 @@
           return;
         }
 
-        canvas.width = videoElement.videoWidth;
-        canvas.height = videoElement.videoHeight;
-        ctx.drawImage(videoElement, 0, 0);
+        // Set canvas dimensions once
+        if (canvas.width !== videoElement.videoWidth || canvas.height !== videoElement.videoHeight) {
+          canvas.width = videoElement.videoWidth;
+          canvas.height = videoElement.videoHeight;
+          console.log('Canvas resized to:', canvas.width, 'x', canvas.height);
+        }
+        
+        // Draw video with respect to mirror state
+        ctx.save();
+        if (isMirrored) {
+          ctx.scale(-1, 1);
+          ctx.drawImage(videoElement, -canvas.width, 0, canvas.width, canvas.height);
+        } else {
+          ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+        }
+        ctx.restore();
 
         // Get image data for QR detection
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        let imageData;
+        try {
+          imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        } catch (e) {
+          console.log('Failed to get ImageData:', e);
+          return;
+        }
         
-        // Detect QR code
-        const qrText = detectQRFromImageData(imageData);
+        // Validate ImageData before processing
+        if (!imageData || !imageData.data || imageData.data.length === 0) {
+          console.log('Invalid ImageData received');
+          return;
+        }
+        
+        const expectedLength = canvas.width * canvas.height * 4;
+        if (imageData.data.length !== expectedLength) {
+          console.log('ImageData length mismatch. Expected:', expectedLength, 'Got:', imageData.data.length);
+          return;
+        }
+        
+        // Update scan count every 10 scans
+        scanCount++;
+        if (scanCount % 10 === 0) {
+          const videoElement = document.getElementById('qrVideo');
+          console.log(`Scanning attempt ${scanCount}, image size: ${canvas.width}x${canvas.height}`);
+          if (videoElement) {
+            console.log('Video dimensions:', videoElement.videoWidth, 'x', videoElement.videoHeight);
+          }
+          console.log('ImageData bytes:', imageData.data.length);
+          
+          // Sample some pixel data to verify we're getting real image data
+          const samplePixels = [];
+          for (let i = 0; i < 5; i++) {
+            const idx = Math.floor(Math.random() * imageData.data.length / 4) * 4;
+            samplePixels.push([
+              imageData.data[idx], 
+              imageData.data[idx + 1], 
+              imageData.data[idx + 2]
+            ]);
+          }
+          console.log('Sample pixels (RGB):', samplePixels);
+          
+          const statusEl = document.getElementById('scannerStatus');
+          if (statusEl) {
+            statusEl.textContent = `✅ Scanning... (${scanCount} attempts)`;
+          }
+        }
+        
+        // Detect QR code with multiple attempts
+        let qrText = detectQRFromImageData(imageData);
+        
+        // Try with inverted colors if first attempt fails
+        if (!qrText && scanCount % 5 === 0) {
+          // Create inverted image data
+          const invertedImageData = ctx.createImageData(imageData.width, imageData.height);
+          for (let i = 0; i < imageData.data.length; i += 4) {
+            // Invert RGB, keep alpha
+            invertedImageData.data[i] = 255 - imageData.data[i];     // R
+            invertedImageData.data[i + 1] = 255 - imageData.data[i + 1]; // G
+            invertedImageData.data[i + 2] = 255 - imageData.data[i + 2]; // B
+            invertedImageData.data[i + 3] = imageData.data[i + 3];       // A
+          }
+          qrText = detectQRFromImageDataInverted(invertedImageData);
+        }
+        
+        // Try cropping to center area every 15 scans
+        if (!qrText && scanCount % 15 === 0) {
+          const centerSize = Math.min(canvas.width, canvas.height) * 0.6;
+          const startX = Math.floor((canvas.width - centerSize) / 2);
+          const startY = Math.floor((canvas.height - centerSize) / 2);
+          
+          // Ensure crop dimensions are valid
+          if (centerSize > 0 && startX >= 0 && startY >= 0 && 
+              startX + centerSize <= canvas.width && startY + centerSize <= canvas.height) {
+            const croppedData = ctx.getImageData(startX, startY, Math.floor(centerSize), Math.floor(centerSize));
+            qrText = detectQRFromImageData(croppedData);
+          }
+          
+          if (scanCount % 30 === 0) {
+            console.log('Trying center crop scan, area:', Math.round(centerSize), 'x', Math.round(centerSize));
+          }
+        }
         
         if (qrText) {
           console.log('QR Code detected:', qrText);
@@ -827,7 +1116,7 @@
       } catch (error) {
         console.error('Scanning error:', error);
       }
-    }, 200); // Scan every 200ms
+    }, 300); // Scan every 300ms to reduce errors
   }
 
   function detectQRFromImageData(imageData) {
@@ -836,14 +1125,100 @@
       return null;
     }
 
+    // Validate ImageData object thoroughly
+    if (!imageData) {
+      console.log('ImageData is null or undefined');
+      return null;
+    }
+    
+    if (!imageData.data || !(imageData.data instanceof Uint8ClampedArray)) {
+      console.log('ImageData.data is invalid:', typeof imageData.data);
+      return null;
+    }
+    
+    if (typeof imageData.width !== 'number' || typeof imageData.height !== 'number') {
+      console.log('ImageData dimensions are invalid:', imageData.width, imageData.height);
+      return null;
+    }
+    
+    if (imageData.width <= 0 || imageData.height <= 0) {
+      console.log('ImageData dimensions are zero or negative:', imageData.width, imageData.height);
+      return null;
+    }
+
+    // Check if data length matches dimensions
+    const expectedLength = imageData.width * imageData.height * 4;
+    if (imageData.data.length !== expectedLength) {
+      console.log('ImageData size mismatch. Expected:', expectedLength, 'Got:', imageData.data.length);
+      return null;
+    }
+
+    // Create a copy of the data to avoid any reference issues
+    const dataArray = new Uint8ClampedArray(imageData.data);
+
     try {
-      const code = jsQR(imageData.data, imageData.width, imageData.height);
+      // Try different detection methods with the copied data
+      console.log('Attempting QR detection on', imageData.width, 'x', imageData.height, 'image');
+      
+      // Method 1: Normal detection
+      let code = jsQR(dataArray, imageData.width, imageData.height, {
+        inversionAttempts: "dontInvert",
+      });
+      
       if (code) {
-        console.log('QR Code detected:', code.data);
+        console.log('✅ QR Code detected (normal):', code.data);
+        return code.data;
+      }
+      
+      // Method 2: With inversion
+      code = jsQR(dataArray, imageData.width, imageData.height, {
+        inversionAttempts: "onlyInvert",
+      });
+      
+      if (code) {
+        console.log('✅ QR Code detected (inverted):', code.data);
+        return code.data;
+      }
+      
+      // Method 3: Auto detection
+      code = jsQR(dataArray, imageData.width, imageData.height, {
+        inversionAttempts: "attemptBoth",
+      });
+      
+      if (code) {
+        console.log('✅ QR Code detected (auto):', code.data);
+        return code.data;
+      }
+      
+    } catch (error) {
+      console.error('❌ QR detection error:', error.message);
+      console.log('ImageData state:', {
+        width: imageData.width,
+        height: imageData.height,
+        dataLength: imageData.data.length,
+        dataType: typeof imageData.data,
+        firstPixels: Array.from(imageData.data.slice(0, 16))
+      });
+    }
+    return null;
+  }
+
+  function detectQRFromImageDataInverted(imageData) {
+    if (typeof jsQR === 'undefined') {
+      return null;
+    }
+
+    try {
+      const code = jsQR(imageData.data, imageData.width, imageData.height, {
+        inversionAttempts: "attemptBoth",
+      });
+      
+      if (code) {
+        console.log('QR Code detected (inverted):', code.data);
         return code.data;
       }
     } catch (error) {
-      console.error('QR detection error:', error);
+      console.error('QR detection error (inverted):', error);
     }
     return null;
   }
@@ -963,5 +1338,37 @@
   await loadFromDB();
 })();
 </script>
+
+<!-- Simple Test QR Code for Scanner Testing -->
+<div style="position: fixed; top: 10px; right: 10px; z-index: 1000; background: white; padding: 10px; border: 2px solid #007bff; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+  <div style="text-align: center; margin-bottom: 10px;">
+    <strong style="color: #007bff; font-size: 12px;">📱 SCANNER TEST</strong>
+  </div>
+  <div id="simpleTestQR"></div>
+  <div style="text-align: center; margin-top: 5px; font-size: 10px; color: #6c757d;">
+    Content: "HELLO"
+  </div>
+</div>
+
+<script>
+  // Generate a very simple test QR code
+  setTimeout(() => {
+    try {
+      if (typeof QRCode !== 'undefined') {
+        new QRCode(document.getElementById("simpleTestQR"), {
+          text: "HELLO",
+          width: 80,
+          height: 80,
+          colorDark: "#000000",
+          colorLight: "#ffffff",
+          correctLevel: QRCode.CorrectLevel.L  // Lowest error correction for simpler pattern
+        });
+      }
+    } catch (e) {
+      console.log('Failed to generate simple test QR:', e);
+    }
+  }, 1000);
+</script>
+
 </body>
 </html>
