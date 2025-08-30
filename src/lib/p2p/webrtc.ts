@@ -50,11 +50,14 @@ export async function applyRemoteAnswer(answerSDP: RTCSessionDescriptionInit) {
   await pc.setRemoteDescription(answerSDP);
   console.log('✅ Remote answer applied successfully');
 }
-import { applyOp } from '$lib/state/items';
+import { applyOp, getCurrentItems, type Item } from '$lib/state/items';
 import { writable } from 'svelte/store';
 import { peerCount, peerStatus } from '$lib/stores/peers';
 
-export const peers = writable<Map<string, { pc: RTCPeerConnection, dc: RTCDataChannel | null }>>(new Map());
+export const peers = writable<Map<string, { pc: RTCPeerConnection, dc: RTCDataChannel | null, remoteId?: string }>>(new Map());
+
+let localPeerId: string | null = null;
+export function setLocalPeerId(id: string) { localPeerId = id; }
 
 const pcConfig: RTCConfiguration = {
   iceServers: [
@@ -75,7 +78,16 @@ export async function newPeer() {
 
   pc.ondatachannel = (e) => {
     dc = e.channel;
+    console.log(`📡 Data channel received for peer ${id}`);
     setupDC(dc, id);
+    // Update peers store with the actual data channel
+    peers.update(m => {
+      const entry = m.get(id);
+      if (entry) {
+        entry.dc = dc;
+      }
+      return m;
+    });
   };
 
   pc.oniceconnectionstatechange = () => {
@@ -87,7 +99,18 @@ export async function newPeer() {
   const entry = { pc, dc };
   peers.update(m => { m.set(id, entry); return m; });
 
-  return { id, pc, setDC: (d: RTCDataChannel) => { dc = d; setupDC(d, id); } };
+  return { id, pc, setDC: (d: RTCDataChannel) => {
+    dc = d;
+    setupDC(d, id);
+    // Update peers store with the actual data channel
+    peers.update(m => {
+      const entry = m.get(id);
+      if (entry) {
+        entry.dc = dc;
+      }
+      return m;
+    });
+  } };
 }
 
 function setupDC(dc: RTCDataChannel, id: string) {
@@ -96,6 +119,18 @@ function setupDC(dc: RTCDataChannel, id: string) {
     console.log(`📡 Data channel opened for peer ${id} - Connection ready!`);
     peerStatus.set('connected');
     peerCount.update(c => c + 1);
+    // Update peers store to trigger UI refresh
+    peers.update(m => m);
+    // Send our local peer id to the remote so the UI can show the real peer id
+    try {
+      if (localPeerId) {
+        dc.send(JSON.stringify({ type: 'introduce', id: localPeerId }));
+        // Ask the remote to send its full state so we can sync
+        dc.send(JSON.stringify({ type: 'request_sync' }));
+      }
+    } catch (e) {
+      console.error('Failed to send introduce/request_sync:', e);
+    }
   }
   dc.onmessage = (ev) => {
     try {
@@ -103,6 +138,30 @@ function setupDC(dc: RTCDataChannel, id: string) {
       if (msg.type === 'op') {
         console.log(`📨 Received operation from peer ${id}:`, msg.op);
         applyOp(msg.op);
+      } else if (msg.type === 'introduce') {
+        console.log(`👋 Peer ${id} introduced itself as ${msg.id}`);
+        // store the remote's peer id for UI
+        peers.update(m => {
+          const entry = m.get(id);
+          if (entry) entry.remoteId = msg.id;
+          return m;
+        });
+      } else if (msg.type === 'request_sync') {
+        console.log(`🔁 Peer ${id} requested full sync`);
+        // send full state
+        try {
+          const items = getCurrentItems();
+          dc.send(JSON.stringify({ type: 'full_sync', items }));
+        } catch (e) {
+          console.error('Failed to send full_sync:', e);
+        }
+      } else if (msg.type === 'full_sync') {
+        console.log(`🔁 Received full sync from peer ${id}`);
+        // apply all items
+        const items = msg.items || {};
+        for (const it of Object.values(items) as Item[]) {
+          try { applyOp({ type: 'upsert', item: it }); } catch (e) { console.error('applyOp failed for sync item', e); }
+        }
       }
     } catch (e) {
       console.error(`❌ Failed to parse message from peer ${id}:`, e);
@@ -115,6 +174,9 @@ function setupDC(dc: RTCDataChannel, id: string) {
     if (getPeerMap().size === 0) {
       peerStatus.set('disconnected');
     }
+  }
+  dc.onerror = (error) => {
+    console.error(`❌ Data channel error for peer ${id}:`, error);
   }
 }
 
@@ -140,9 +202,9 @@ export function getPeerMap() {
 
 export async function createOfferAndLocalize() {
   console.log('🏠 Creating offer (host mode)...');
-  const { id, pc } = await newPeer();
+  const { id, pc, setDC } = await newPeer();
   const dc = pc.createDataChannel('data');
-  setupDC(dc, id);
+  setDC(dc);
 
   console.log('📡 Creating WebRTC offer...');
   const offer = await pc.createOffer();

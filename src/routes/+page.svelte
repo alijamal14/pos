@@ -21,6 +21,11 @@
 	$: items = $itemsStore;
 	$: connectionStatus = $peerStatus;
 	$: connectedPeers = Array.from($peersStore.entries());
+	$: console.log('🔄 UI Update - Connected peers:', connectedPeers.map(([id, peer]) => ({
+		id,
+		dcState: peer.dc?.readyState,
+		dcExists: !!peer.dc
+	})));
 
 	onMount(async () => {
 		await loadFromDB();
@@ -55,6 +60,7 @@
 		const textToCopy = localAnswer || localOffer;
 		if (textToCopy) {
 			navigator.clipboard.writeText(textToCopy);
+			console.log('📋 Copied connection code:', textToCopy.substring(0, 50) + '...');
 			pushToast('Code copied to clipboard!', 'success');
 		}
 	}
