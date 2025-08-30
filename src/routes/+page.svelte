@@ -5,6 +5,7 @@
 	import { startScanner } from '$lib/qr/scan';
 	import { pushToast } from '$lib/ui/Toast.svelte';
 	import { peerCount, peerStatus } from '$lib/stores/peers';
+	import { peers as peersStore } from '$lib/p2p/webrtc';
 	import { runDiagnostics } from '$lib/utils/diagnostics';
 	import { encodePayload, decodePayload } from '$lib/p2p/signaling';
 	import { createOfferAndLocalize, createAnswerAndLocalize, applyRemoteAnswer } from '$lib/p2p/webrtc';
@@ -15,11 +16,16 @@
 	let localAnswer = '';
 	let connectionMode = '';
 	let showConnectionFlow = false;
+	let peerId = '';
 
 	$: items = $itemsStore;
+	$: connectionStatus = $peerStatus;
+	$: connectedPeers = Array.from($peersStore.entries());
 
 	onMount(async () => {
 		await loadFromDB();
+		// Generate unique peer ID
+		peerId = Math.random().toString(36).slice(2, 8);
 	});
 
 	function addItem(){
@@ -119,7 +125,7 @@
 				<div class="text-sm text-slate-300">Local-first list that syncs peer-to-peer via WebRTC</div>
 			</div>
 			<div class="text-sm">
-				<span class="px-3 py-1 rounded-full bg-[#1a2249]">Peer ID: demo</span>
+				<span class="px-3 py-1 rounded-full bg-[#1a2249]">Peer ID: {peerId}</span>
 			</div>
 		</div>
 
@@ -204,9 +210,21 @@
 											</div>
 										</div>
 										
-										<div class="flex items-center text-sm text-slate-400">
+										<div class="flex items-center text-sm">
 											<div class="w-6 h-6 bg-[#2a3570] rounded-full flex items-center justify-center text-xs font-bold mr-3">2</div>
-											<span>Waiting for them to connect...</span>
+											<span>Waiting for response code...</span>
+										</div>
+										
+										<div class="bg-[#0f1530] p-3 rounded-lg">
+											<div class="text-xs text-slate-400 mb-2">Paste the response code from the joining device:</div>
+											<div class="flex gap-2">
+												<input 
+													bind:value={localAnswer} 
+													placeholder="Paste response code here..." 
+													class="flex-1 rounded-md p-2 bg-[#0a0f20] border border-[#2c3978] text-xs font-mono" 
+												/>
+												<button on:click={onApplyAnswer} class="px-3 py-2 bg-[#1b7a61] rounded-md">✅ Apply</button>
+											</div>
 										</div>
 									</div>
 								{/if}
@@ -266,21 +284,23 @@
 							</div>
 						{/if}
 						
-						<!-- Connection Status -->
-						<div class="mt-6 pt-4 border-t border-[#2c3978]">
-							<div class="flex items-center justify-between">
-								<div class="flex items-center">
-									<span class="inline-block w-3 h-3 bg-[#ff6b6b] rounded-full mr-2"></span>
-									<span class="text-sm text-slate-400">Not connected</span>
+						<!-- Connected Peers List -->
+						{#if connectedPeers.length > 0}
+							<div class="mt-4 pt-4 border-t border-[#2c3978]">
+								<div class="text-sm text-slate-400 mb-2">Connected Peers:</div>
+								<div class="space-y-1">
+									{#each connectedPeers as [peerId, peer]}
+										<div class="flex items-center text-sm">
+											<span class="inline-block w-2 h-2 bg-green-500 rounded-full mr-2"></span>
+											<span class="font-mono text-xs">{peerId}</span>
+											<span class="ml-2 text-slate-500">
+												{peer.dc?.readyState === 'open' ? '🟢 Active' : '🟡 Connecting'}
+											</span>
+										</div>
+									{/each}
 								</div>
-								<button 
-									on:click={() => { showConnectionFlow = false; connectionMode = ''; localOffer = ''; remoteOffer = ''; localAnswer = ''; }}
-									class="text-xs text-slate-500 hover:text-slate-300"
-								>
-									Reset
-								</button>
 							</div>
-						</div>
+						{/if}
 					</div>
 				{/if}
 			</div>

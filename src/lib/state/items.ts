@@ -1,4 +1,5 @@
 import { writable } from 'svelte/store';
+import { broadcast } from '$lib/p2p/webrtc';
 
 export interface Item {
   id: string;
@@ -74,6 +75,9 @@ export async function applyOp(op: { type: 'upsert' | 'delete', item?: Item, id?:
       cur[op.item.id] = op.item;
       await putToDB(op.item);
       itemsStore.set({ ...cur });
+
+      // Broadcast the operation to connected peers
+      broadcast({ type: 'op', op });
     }
   } else if (op.type === 'delete' && op.id) {
     const existing = cur[op.id];
@@ -81,6 +85,9 @@ export async function applyOp(op: { type: 'upsert' | 'delete', item?: Item, id?:
     cur[op.id] = tomb;
     await putToDB(tomb);
     itemsStore.set({ ...cur });
+
+    // Broadcast the operation to connected peers
+    broadcast({ type: 'op', op });
   }
 }
 
