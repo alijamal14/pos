@@ -17,6 +17,7 @@
 	let connectionMode = '';
 	let showConnectionFlow = false;
 	let peerId = '';
+	let pendingOffers: string[] = []; // Store multiple offers for different joiners
 
 	$: items = $itemsStore;
 	$: connectionStatus = $peerStatus;
@@ -47,10 +48,11 @@
 		try {
 			const desc = await createOfferAndLocalize();
 			const encoded = encodePayload({ sdp: desc });
-			localOffer = encoded;
+			pendingOffers = [...pendingOffers, encoded];
+			localOffer = encoded; // Keep for backward compatibility with QR generation
 			const el = document.getElementById('offerQR') as HTMLElement;
 			if (el) await generateToCanvas(el, encoded);
-			pushToast('Connection code generated! Share it with another device.', 'success');
+			pushToast(`Connection code ${pendingOffers.length} generated! Share it with a joining device.`, 'success');
 		} catch (e) { 
 			console.error('Offer creation error:', e);
 			pushToast('Failed to generate connection code', 'error'); 
@@ -58,7 +60,7 @@
 	}
 
 	function copyOffer() {
-		const textToCopy = localAnswer || localOffer;
+		const textToCopy = localAnswer || (pendingOffers.length > 0 ? pendingOffers[pendingOffers.length - 1] : localOffer);
 		if (textToCopy) {
 			navigator.clipboard.writeText(textToCopy);
 			console.log('📋 Copied connection code:', textToCopy.substring(0, 50) + '...');
@@ -196,47 +198,46 @@
 							<div class="space-y-4">
 								<div class="flex items-center text-sm">
 									<div class="w-6 h-6 bg-[#1b7a61] rounded-full flex items-center justify-center text-xs font-bold mr-3">1</div>
-									<span class="text-slate-300">Generate your connection code</span>
+									<span class="text-slate-300">Generate connection codes for joiners</span>
 								</div>
 								
-								{#if !localOffer}
+								<div class="space-y-3">
 									<button on:click={onCreateOffer} class="w-full px-4 py-3 bg-[#1b7a61] hover:bg-[#2a8a71] rounded-lg font-medium transition-colors">
-										🚀 Generate Connection Code
+										🚀 Generate New Connection Code
 									</button>
-								{:else}
-									<div class="space-y-3">
-										<div class="flex items-center text-sm text-green-400">
-											<div class="w-6 h-6 bg-green-600 rounded-full flex items-center justify-center text-xs font-bold mr-3">✓</div>
-											<span>Connection code ready!</span>
+									
+									{#if pendingOffers.length > 0}
+										<div class="text-sm text-slate-400">Active connection codes ({pendingOffers.length}):</div>
+										<div class="space-y-2 max-h-40 overflow-y-auto">
+											{#each pendingOffers as offer, index}
+												<div class="bg-[#0f1530] p-3 rounded-lg">
+													<div class="text-xs text-slate-400 mb-2">Code {index + 1}:</div>
+													<div class="flex gap-2">
+														<input class="flex-1 rounded-md p-2 bg-[#0a0f20] border border-[#2c3978] text-xs font-mono" readonly value={offer} />
+														<button class="px-3 py-2 bg-[#2563eb] rounded-md" on:click={() => navigator.clipboard.writeText(offer)}>📋 Copy</button>
+													</div>
+												</div>
+											{/each}
 										</div>
-										
-										<div class="bg-[#0f1530] p-3 rounded-lg">
-											<div class="text-xs text-slate-400 mb-2">Share this code with the other device:</div>
-											<div id="offerQR" class="flex justify-center mb-3"></div>
-											<div class="flex gap-2">
-												<input class="flex-1 rounded-md p-2 bg-[#0a0f20] border border-[#2c3978] text-xs font-mono" readonly value={localOffer} />
-												<button class="px-3 py-2 bg-[#2563eb] rounded-md" on:click={copyOffer}>📋 Copy</button>
-											</div>
-										</div>
-										
-										<div class="flex items-center text-sm">
-											<div class="w-6 h-6 bg-[#2a3570] rounded-full flex items-center justify-center text-xs font-bold mr-3">2</div>
-											<span>Waiting for response code...</span>
-										</div>
-										
-										<div class="bg-[#0f1530] p-3 rounded-lg">
-											<div class="text-xs text-slate-400 mb-2">Paste the response code from the joining device:</div>
-											<div class="flex gap-2">
-												<input 
-													bind:value={localAnswer} 
-													placeholder="Paste response code here..." 
-													class="flex-1 rounded-md p-2 bg-[#0a0f20] border border-[#2c3978] text-xs font-mono" 
-												/>
-												<button on:click={onApplyAnswer} class="px-3 py-2 bg-[#1b7a61] rounded-md">✅ Apply</button>
-											</div>
-										</div>
+									{/if}
+								</div>
+								
+								<div class="flex items-center text-sm">
+									<div class="w-6 h-6 bg-[#2a3570] rounded-full flex items-center justify-center text-xs font-bold mr-3">2</div>
+									<span>Apply response codes from joiners</span>
+								</div>
+								
+								<div class="bg-[#0f1530] p-3 rounded-lg">
+									<div class="text-xs text-slate-400 mb-2">Paste response code from any joiner:</div>
+									<div class="flex gap-2">
+										<input 
+											bind:value={localAnswer} 
+											placeholder="Paste response code here..." 
+											class="flex-1 rounded-md p-2 bg-[#0a0f20] border border-[#2c3978] text-xs font-mono" 
+										/>
+										<button on:click={onApplyAnswer} class="px-3 py-2 bg-[#1b7a61] rounded-md">✅ Apply</button>
 									</div>
-								{/if}
+								</div>
 							</div>
 						{:else}
 							<!-- Join Flow -->

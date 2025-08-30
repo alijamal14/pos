@@ -185,30 +185,19 @@ export async function createAnswerAndLocalize(offerSDP: RTCSessionDescriptionIni
   try {
     console.log('🔗 Creating answer (join mode)...');
 
-    // Find the most recent peer (created for offer), or create one if none exists
-    const m = getPeerMap();
-    let last = Array.from(m.values()).at(-1);
+    // Always create a new peer for each joiner (supporting multiple peers)
+    console.log('📱 Creating new peer connection for joining device...');
+    const { id, pc } = await newPeer();
 
-    // If no peer connection exists, create one (for joining devices)
-    if (!last) {
-      console.log('📱 No existing peer connection found, creating new one for answer...');
-      const { id, pc } = await newPeer();
-      last = { pc, dc: null };
-      // Note: We don't create a data channel here because the offerer already created one
-    }
-
-    const pc = last.pc;
     console.log('📡 Setting remote description...', offerSDP.type);
-
     await pc.setRemoteDescription(offerSDP);
     console.log('🔄 Creating answer...');
 
     const answer = await pc.createAnswer();
     console.log('🔗 Setting local description...');
-
     await pc.setLocalDescription(answer);
-    console.log('⏳ Waiting for ICE gathering...');
 
+    console.log('⏳ Waiting for ICE gathering...');
     await waitForIceGathering(pc);
     console.log('✅ Answer created successfully! Connection code ready to share.');
 
@@ -223,12 +212,23 @@ export async function createAnswerAndLocalize(offerSDP: RTCSessionDescriptionIni
 export async function applyRemoteAnswer(answerSDP: RTCSessionDescriptionInit) {
   console.log('🔗 Applying remote answer...');
   const m = getPeerMap();
-  const last = Array.from(m.values()).at(-1);
-  if (!last) {
+
+  // Find the most recent peer that doesn't have a remote description set yet
+  // This handles the case where we have multiple peers waiting for answers
+  let targetPeer = null;
+  for (const [id, peer] of m) {
+    if (peer.pc && !peer.pc.remoteDescription) {
+      targetPeer = { id, peer };
+      break;
+    }
+  }
+
+  if (!targetPeer) {
     console.error('❌ No pending peer connection found for answer');
     throw new Error('No pending peer');
   }
-  const pc = last.pc;
+
+  const { pc } = targetPeer.peer;
   console.log('📡 Setting remote answer description...');
   await pc.setRemoteDescription(answerSDP);
   console.log('✅ Remote answer applied successfully');
