@@ -5,7 +5,7 @@
 	import { startScanner } from '$lib/qr/scan';
 	import { pushToast } from '$lib/ui/Toast.svelte';
 	import { peerCount, peerStatus } from '$lib/stores/peers';
-	import { peers as peersStore } from '$lib/p2p/webrtc';
+	import { peers as peersStore, setLocalPeerId } from '$lib/p2p/webrtc';
 	import { runDiagnostics } from '$lib/utils/diagnostics';
 	import { encodePayload, decodePayload } from '$lib/p2p/signaling';
 	import { createOfferAndLocalize, createAnswerAndLocalize, applyRemoteAnswer } from '$lib/p2p/webrtc';
@@ -20,9 +20,9 @@
 
 	$: items = $itemsStore;
 	$: connectionStatus = $peerStatus;
-	$: connectedPeers = Array.from($peersStore.entries());
+	$: connectedPeers = Array.from($peersStore.entries()).filter(([_, peer]) => peer.dc?.readyState === 'open' && !!peer.remoteId);
 	$: console.log('🔄 UI Update - Connected peers:', connectedPeers.map(([id, peer]) => ({
-		id,
+		id: peer.remoteId,
 		dcState: peer.dc?.readyState,
 		dcExists: !!peer.dc
 	})));
@@ -31,6 +31,7 @@
 		await loadFromDB();
 		// Generate unique peer ID
 		peerId = Math.random().toString(36).slice(2, 8);
+		setLocalPeerId(peerId);
 	});
 
 	function addItem(){
@@ -143,17 +144,19 @@
 					<button on:click={addItem} class="px-3 py-2 rounded-md bg-[#1b7a61]">Add</button>
 				</div>
 				<div class="space-y-2">
-					{#each Object.values(items) as it}
-						{#if !it.deleted}
-							<div class="p-3 bg-[#0f1530] rounded-md flex justify-between items-center">
-								<div>
-									<div class="font-medium">{it.text}</div>
-									<div class="text-xs text-slate-400">{it.updatedAt}</div>
-								</div>
-								<div><button class="px-2 py-1 bg-[#2a3570] rounded-md">⋯</button></div>
-							</div>
-						{/if}
-					{/each}
+									{#each Object.values(items) as it}
+										{#if !it.deleted}
+											<div class="p-3 bg-[#0f1530] rounded-md flex justify-between items-center">
+												<div>
+													<div class="font-medium">{it.text}</div>
+													<div class="text-xs text-slate-400">{it.updatedAt}</div>
+												</div>
+												<div class="flex gap-2">
+													<button class="px-2 py-1 bg-[#e11d48] rounded-md text-white hover:bg-[#be123c]" on:click={() => applyOp({ type: 'delete', id: it.id })}>🗑️ Delete</button>
+												</div>
+											</div>
+										{/if}
+									{/each}
 				</div>
 			</div>
 
@@ -295,15 +298,13 @@
 							<div class="mt-4 pt-4 border-t border-[#2c3978]">
 								<div class="text-sm text-slate-400 mb-2">Connected Peers:</div>
 								<div class="space-y-1">
-									{#each connectedPeers as [peerId, peer]}
-										<div class="flex items-center text-sm">
-											<span class="inline-block w-2 h-2 bg-green-500 rounded-full mr-2"></span>
-											<span class="font-mono text-xs">{peerId}</span>
-											<span class="ml-2 text-slate-500">
-												{peer.dc?.readyState === 'open' ? '🟢 Active' : '🟡 Connecting'}
-											</span>
-										</div>
-									{/each}
+												{#each connectedPeers as [_, peer]}
+													<div class="flex items-center text-sm">
+														<span class="inline-block w-2 h-2 bg-green-500 rounded-full mr-2"></span>
+														<span class="font-mono text-xs">{peer.remoteId}</span>
+														<span class="ml-2 text-slate-500">🟢 Active</span>
+													</div>
+												{/each}
 								</div>
 							</div>
 						{/if}
