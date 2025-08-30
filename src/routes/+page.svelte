@@ -5,7 +5,7 @@
 	import { startScanner } from '$lib/qr/scan';
 	import { pushToast } from '$lib/ui/Toast.svelte';
 	import { peerCount, peerStatus } from '$lib/stores/peers';
-	import { peers as peersStore, setLocalPeerId } from '$lib/p2p/webrtc';
+	import { peers as peersStore, setLocalPeerId, getAllPeers, disconnectPeer, allPeers } from '$lib/p2p/webrtc';
 	import { runDiagnostics } from '$lib/utils/diagnostics';
 	import { encodePayload, decodePayload } from '$lib/p2p/signaling';
 	import { createOfferAndLocalize, createAnswerAndLocalize, applyRemoteAnswer } from '$lib/p2p/webrtc';
@@ -17,16 +17,31 @@
 	let connectionMode = '';
 	let showConnectionFlow = false;
 	let peerId = '';
-	let pendingOffers: string[] = []; // Store multiple offers for different joiners
 
 	$: items = $itemsStore;
 	$: connectionStatus = $peerStatus;
 	$: connectedPeers = Array.from($peersStore.entries()).filter(([_, peer]) => peer.dc?.readyState === 'open' && !!peer.remoteId);
+	$: allNetworkPeers = Array.from($allPeers.values());
+	$: isHost = connectionMode === 'host';
 	$: console.log('🔄 UI Update - Connected peers:', connectedPeers.map(([id, peer]) => ({
 		id: peer.remoteId,
 		dcState: peer.dc?.readyState,
 		dcExists: !!peer.dc
 	})));
+	
+	// Regenerate QR code when localOffer changes
+	$: if (localOffer && connectionMode === 'host') {
+		// Use setTimeout to ensure DOM is updated
+		setTimeout(() => {
+			const el = document.getElementById('offerQR') as HTMLElement;
+			if (el) {
+				console.log('🎨 Generating QR code for offer:', localOffer.substring(0, 50) + '...');
+				generateToCanvas(el, localOffer).catch(console.error);
+			} else {
+				console.warn('⚠️ offerQR element not found');
+			}
+		}, 100);
+	}
 
 	onMount(async () => {
 		await loadFromDB();
@@ -46,13 +61,25 @@
 
 	async function onCreateOffer(){
 		try {
+			// Clear previous offer to ensure UI updates
+			localOffer = '';
+			
 			const desc = await createOfferAndLocalize();
 			const encoded = encodePayload({ sdp: desc });
-			pendingOffers = [...pendingOffers, encoded];
-			localOffer = encoded; // Keep for backward compatibility with QR generation
-			const el = document.getElementById('offerQR') as HTMLElement;
-			if (el) await generateToCanvas(el, encoded);
-			pushToast(`Connection code ${pendingOffers.length} generated! Share it with a joining device.`, 'success');
+			localOffer = encoded;
+			
+			console.log('📡 Generated offer code:', encoded.substring(0, 50) + '...');
+			
+			// Also manually generate QR code after a short delay
+			setTimeout(async () => {
+				const el = document.getElementById('offerQR') as HTMLElement;
+				if (el) {
+					console.log('🎨 Manually generating QR code...');
+					await generateToCanvas(el, encoded);
+				}
+			}, 200);
+			
+			pushToast('Connection code generated! Share it with a joining device.', 'success');
 		} catch (e) { 
 			console.error('Offer creation error:', e);
 			pushToast('Failed to generate connection code', 'error'); 
@@ -60,7 +87,7 @@
 	}
 
 	function copyOffer() {
-		const textToCopy = localAnswer || (pendingOffers.length > 0 ? pendingOffers[pendingOffers.length - 1] : localOffer);
+		const textToCopy = localAnswer || localOffer;
 		if (textToCopy) {
 			navigator.clipboard.writeText(textToCopy);
 			console.log('📋 Copied connection code:', textToCopy.substring(0, 50) + '...');
@@ -124,6 +151,20 @@
 	}
 
 	function runDiag(){ runDiagnostics(); pushToast('Diagnostics printed to console', 'info'); }
+
+	function disconnectPeerById(peerId: string) {
+		try {
+			const success = disconnectPeer(peerId);
+			if (success) {
+				pushToast(`Disconnected peer ${peerId}`, 'success');
+			} else {
+				pushToast(`Failed to disconnect peer ${peerId}`, 'error');
+			}
+		} catch (e) {
+			console.error('Failed to disconnect peer:', e);
+			pushToast('Failed to disconnect peer', 'error');
+		}
+	}
 </script>
 
 <div class="p-6 min-h-screen bg-gradient-to-br from-[#0b1020] via-[#0b1530] to-[#0a1130] text-white">
@@ -206,20 +247,27 @@
 										🚀 Generate New Connection Code
 									</button>
 									
-									{#if pendingOffers.length > 0}
-										<div class="text-sm text-slate-400">Active connection codes ({pendingOffers.length}):</div>
-										<div class="space-y-2 max-h-40 overflow-y-auto">
-											{#each pendingOffers as offer, index}
-												<div class="bg-[#0f1530] p-3 rounded-lg">
-													<div class="text-xs text-slate-400 mb-2">Code {index + 1}:</div>
-													<div class="flex gap-2">
-														<input class="flex-1 rounded-md p-2 bg-[#0a0f20] border border-[#2c3978] text-xs font-mono" readonly value={offer} />
-														<button class="px-3 py-2 bg-[#2563eb] rounded-md" on:click={() => navigator.clipboard.writeText(offer)}>📋 Copy</button>
-													</div>
+									{#if localOffer}
+										<div class="space-y-3">
+											<div class="flex items-center text-sm text-green-400">
+												<div class="w-6 h-6 bg-green-600 rounded-full flex items-center justify-center text-xs font-bold mr-3">✓</div>
+												<span>Connection code ready!</span>
+											</div>
+											
+											<div class="bg-[#0f1530] p-3 rounded-lg">
+												<div class="text-xs text-slate-400 mb-2">Share this connection code:</div>
+												<div id="offerQR" class="flex justify-center mb-3"></div>
+												<div class="flex gap-2">
+													<input class="flex-1 rounded-md p-2 bg-[#0a0f20] border border-[#2c3978] text-xs font-mono" readonly value={localOffer} />
+													<button class="px-3 py-2 bg-[#2563eb] rounded-md" on:click={copyOffer}>📋 Copy</button>
 												</div>
-											{/each}
+											</div>
 										</div>
 									{/if}
+									
+									<div class="text-xs text-slate-400 mt-2">
+										Each code is for one-time use only. Generate a new code for each joining device.
+									</div>
 								</div>
 								
 								<div class="flex items-center text-sm">
@@ -294,18 +342,37 @@
 							</div>
 						{/if}
 						
-						<!-- Connected Peers List -->
-						{#if connectedPeers.length > 0}
+						<!-- Successfully Connected Peers -->
+						{#if allNetworkPeers.length > 0}
 							<div class="mt-4 pt-4 border-t border-[#2c3978]">
-								<div class="text-sm text-slate-400 mb-2">Connected Peers:</div>
-								<div class="space-y-1">
-												{#each connectedPeers as [_, peer]}
-													<div class="flex items-center text-sm">
-														<span class="inline-block w-2 h-2 bg-green-500 rounded-full mr-2"></span>
-														<span class="font-mono text-xs">{peer.remoteId}</span>
-														<span class="ml-2 text-slate-500">🟢 Active</span>
+								<div class="text-sm text-slate-400 mb-3">Successfully Connected Peers ({allNetworkPeers.length}):</div>
+								<div class="space-y-2">
+									{#each allNetworkPeers as peer}
+										<div class="flex items-center justify-between bg-[#0f1530] p-3 rounded-lg">
+											<div class="flex items-center">
+												<span class="inline-block w-3 h-3 bg-green-500 rounded-full mr-3"></span>
+												<div>
+													<div class="font-mono text-sm font-medium">{peer.id}</div>
+													<div class="text-xs text-slate-400">
+														{#if peer.isHost}
+															Host • Connected {peer.connectedAt ? new Date(peer.connectedAt).toLocaleTimeString() : ''}
+														{:else}
+															Peer • Connected {peer.connectedAt ? new Date(peer.connectedAt).toLocaleTimeString() : ''}
+														{/if}
 													</div>
-												{/each}
+												</div>
+											</div>
+											{#if isHost && !peer.isHost}
+												<button 
+													class="px-3 py-2 bg-[#e11d48] hover:bg-[#be123c] rounded-md text-white text-sm transition-colors"
+													on:click={() => disconnectPeerById(peer.id)}
+													title="Disconnect this peer"
+												>
+													🔌 Disconnect
+												</button>
+											{/if}
+										</div>
+									{/each}
 								</div>
 							</div>
 						{/if}
@@ -313,6 +380,41 @@
 				{/if}
 			</div>
 		</div>
+
+		<!-- Network Peers Section (Always Visible) -->
+		{#if allNetworkPeers.length > 0}
+			<div class="bg-[#121937] p-4 rounded-xl">
+				<h2 class="uppercase text-sm mb-4 text-slate-300">🌐 Successfully Connected Peers</h2>
+				<div class="grid gap-3">
+					{#each allNetworkPeers as peer}
+						<div class="flex items-center justify-between bg-[#0f1530] p-3 rounded-lg">
+							<div class="flex items-center">
+								<span class="inline-block w-3 h-3 bg-green-500 rounded-full mr-3"></span>
+								<div>
+									<div class="font-mono text-sm font-medium">{peer.id}</div>
+									<div class="text-xs text-slate-400">
+										{#if peer.isHost}
+											Host • Connected {peer.connectedAt ? new Date(peer.connectedAt).toLocaleTimeString() : ''}
+										{:else}
+											Peer • Connected {peer.connectedAt ? new Date(peer.connectedAt).toLocaleTimeString() : ''}
+										{/if}
+									</div>
+								</div>
+							</div>
+							{#if isHost && !peer.isHost}
+								<button 
+									class="px-3 py-2 bg-[#e11d48] hover:bg-[#be123c] rounded-md text-white text-sm transition-colors"
+									on:click={() => disconnectPeerById(peer.id)}
+									title="Disconnect this peer"
+								>
+									🔌 Disconnect
+								</button>
+							{/if}
+						</div>
+					{/each}
+				</div>
+			</div>
+		{/if}
 
 		<div class="bg-[#121937] p-4 rounded-xl">
 			<h2 class="uppercase text-sm mb-2 text-slate-300">Debug</h2>

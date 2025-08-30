@@ -3,6 +3,7 @@ import { writable } from 'svelte/store';
 import { peerCount, peerStatus } from '$lib/stores/peers';
 
 export const peers = writable<Map<string, { pc: RTCPeerConnection, dc: RTCDataChannel | null, remoteId?: string }>>(new Map());
+export const allPeers = writable<Map<string, { id: string, isHost?: boolean, connectedAt?: number }>>(new Map());
 
 let localPeerId: string | null = null;
 export function setLocalPeerId(id: string) { localPeerId = id; }
@@ -99,6 +100,8 @@ function setupDC(dc: RTCDataChannel, id: string) {
           if (entry) entry.remoteId = msg.id;
           return m;
         });
+        // Add this peer to the network
+        addPeerToNetwork(msg.id);
       } else if (msg.type === 'request_sync') {
         console.log(`🔁 Peer ${id} requested full sync`);
         // send full state
@@ -124,6 +127,20 @@ function setupDC(dc: RTCDataChannel, id: string) {
         // Update the store with merged and sorted items
         const sorted = Object.values(merged).sort((a, b) => (a.updatedAt || '').localeCompare(b.updatedAt || ''));
         itemsStore.set(Object.fromEntries(sorted.map(it => [it.id, it])));
+      } else if (msg.type === 'peer_list') {
+        console.log(`📋 Received peer list from peer ${id}:`, msg.peers);
+        // Update our local peer list
+        allPeers.update(m => {
+          // Clear existing peers and add the received list
+          m.clear();
+          for (const peer of msg.peers) {
+            m.set(peer.id, peer);
+          }
+          return m;
+        });
+      } else if (msg.type === 'disconnect') {
+        console.log(`🔌 Peer ${id} requested disconnect`);
+        disconnectPeer(id);
       }
     } catch (e) {
       console.error(`❌ Failed to parse message from peer ${id}:`, e);
@@ -132,6 +149,10 @@ function setupDC(dc: RTCDataChannel, id: string) {
 
   dc.onclose = () => {
     console.log(`🔌 Data channel closed for peer ${id}`);
+    const peerEntry = getPeerMap().get(id);
+    if (peerEntry?.remoteId) {
+      removePeerFromNetwork(peerEntry.remoteId);
+    }
     peers.update(m => { m.delete(id); return m; });
     peerCount.update(c => Math.max(0, c - 1));
     if (getPeerMap().size === 0) {
@@ -164,11 +185,106 @@ export function getPeerMap() {
   return v;
 }
 
+export function getAllPeers() {
+  let v: Map<string, { id: string, isHost?: boolean, connectedAt?: number }> = new Map();
+  allPeers.subscribe(x => v = x)();
+  return v;
+}
+
+export function addPeerToNetwork(peerId: string, isHost = false) {
+  allPeers.update(m => {
+    m.set(peerId, { id: peerId, isHost, connectedAt: Date.now() });
+    return m;
+  });
+  // Broadcast the updated peer list to all connected peers
+  broadcastPeerList();
+}
+
+export function removePeerFromNetwork(peerId: string) {
+  allPeers.update(m => {
+    m.delete(peerId);
+    return m;
+  });
+  // Broadcast the updated peer list to all connected peers
+  broadcastPeerList();
+}
+
+export function broadcastPeerList() {
+  const peerList = Array.from(getAllPeers().values());
+  broadcast({ type: 'peer_list', peers: peerList });
+}
+
+export function disconnectPeer(peerId: string): boolean {
+  console.log(`🔌 Disconnecting peer: ${peerId}`);
+  const m = getPeerMap();
+
+  // Find peer by remoteId or by peer connection ID
+  let targetPeerId = null;
+  let targetPeer = null;
+
+  for (const [id, peer] of m) {
+    if (peer.remoteId === peerId || id === peerId) {
+      targetPeerId = id;
+      targetPeer = peer;
+      break;
+    }
+  }
+
+  if (targetPeer) {
+    try {
+      // Close the data channel first
+      if (targetPeer.dc && targetPeer.dc.readyState !== 'closed') {
+        targetPeer.dc.close();
+        console.log(`✅ Data channel closed for peer ${peerId}`);
+      }
+
+      // Close the peer connection
+      if (targetPeer.pc && targetPeer.pc.connectionState !== 'closed') {
+        targetPeer.pc.close();
+        console.log(`✅ Peer connection closed for peer ${peerId}`);
+      }
+
+      // Remove from local peers map
+      if (targetPeerId) {
+        peers.update(p => {
+          p.delete(targetPeerId);
+          return p;
+        });
+      }
+
+      // Remove from network peers
+      removePeerFromNetwork(peerId);
+
+      // Update peer count
+      peerCount.update(c => Math.max(0, c - 1));
+
+      // Update status if no peers left
+      if (getPeerMap().size === 0) {
+        peerStatus.set('disconnected');
+      }
+
+      console.log(`✅ Successfully disconnected peer: ${peerId}`);
+      return true;
+    } catch (error) {
+      console.error(`❌ Error disconnecting peer ${peerId}:`, error);
+      return false;
+    }
+  } else {
+    console.warn(`⚠️ Peer ${peerId} not found for disconnection`);
+    return false;
+  }
+}
+
 export async function createOfferAndLocalize() {
   console.log('🏠 Creating offer (host mode)...');
   const { id, pc, setDC } = await newPeer();
   const dc = pc.createDataChannel('data');
   setDC(dc);
+
+  // Add ourselves as the host to the network
+  if (localPeerId) {
+    addPeerToNetwork(localPeerId, true);
+  }
 
   console.log('📡 Creating WebRTC offer...');
   const offer = await pc.createOffer();
