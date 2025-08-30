@@ -23,6 +23,16 @@ This guide documents the deployment of a SvelteKit-based P2P items web applicati
 - **URL Rewrite Module**: Not available on current IIS installation
 - **Workaround**: Direct links to specific routes won't work; users must start from root URL
 
+## Recent Issues & Fixes
+
+### Issue: 500 Internal Server Error (August 30, 2025)
+**Problem**: Site suddenly returned 500 errors for both HTTP and HTTPS
+**Root Cause**: A `web.config` file was placed in the `build/` directory containing URL rewrite rules that require the IIS URL Rewrite module (which is not installed)
+**Solution**: Removed `build/web.config` file
+**Result**: Site immediately returned to working state (200 OK)
+
+**Prevention**: Never place web.config files with URL rewrite rules in directories served by IIS unless the URL Rewrite module is installed and configured.
+
 ## IIS Configuration
 
 ### Website Setup
@@ -129,6 +139,7 @@ icacls "C:\inetpub\wwwroot\pos\build" /t
 - [x] HTTP access verified
 - [x] HTTPS access verified
 - [x] Basic functionality tested
+- [x] **FIXED**: Removed problematic web.config from build directory
 - [ ] SPA routing (requires URL Rewrite module)
 - [ ] Security headers (requires URL Rewrite module)
 - [ ] Compression (requires additional configuration)
@@ -151,3 +162,4 @@ Invoke-WebRequest -Uri "http://pos.mk313.com/" -UseBasicParsing
 ---
 *Last Updated: August 30, 2025*
 *Status: ✅ Production Ready (with known SPA routing limitation)*
+*Recent Fix: Resolved 500 Internal Server Error caused by web.config in build directory*

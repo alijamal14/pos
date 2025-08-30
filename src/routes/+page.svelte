@@ -13,6 +13,8 @@
 	let remoteOffer = '';
 	let localOffer = '';
 	let localAnswer = '';
+	let connectionMode = '';
+	let showConnectionFlow = false;
 
 	$: items = $itemsStore;
 
@@ -36,30 +38,47 @@
 			localOffer = encoded;
 			const el = document.getElementById('offerQR') as HTMLElement;
 			if (el) await generateToCanvas(el, encoded);
-			pushToast('Offer generated', 'info');
-		} catch (e) { pushToast('Offer creation failed', 'error'); }
+			pushToast('Connection code generated! Share it with another device.', 'success');
+		} catch (e) { 
+			console.error('Offer creation error:', e);
+			pushToast('Failed to generate connection code', 'error'); 
+		}
 	}
 
 	function copyOffer() {
-		if (localOffer) {
-			navigator.clipboard.writeText(localOffer);
-			pushToast('Offer copied to clipboard', 'success');
+		const textToCopy = localAnswer || localOffer;
+		if (textToCopy) {
+			navigator.clipboard.writeText(textToCopy);
+			pushToast('Code copied to clipboard!', 'success');
 		}
 	}
 
 
 		async function onCreateAnswer(){
 			try {
+				// Check if we have a remote offer
+				if (!remoteOffer.trim()) {
+					throw new Error('Please enter the connection code first');
+				}
+
 				// Parse the offer from remoteOffer
 				const offerObj = decodePayload(remoteOffer);
-				if (!offerObj.sdp) throw new Error('No SDP in offer');
+				if (!offerObj.sdp) {
+					throw new Error('Invalid connection code format');
+				}
+
+				console.log('Creating response for connection code:', offerObj.sdp.type);
 				const answerDesc = await createAnswerAndLocalize(offerObj.sdp);
 				const encoded = encodePayload({ sdp: answerDesc });
 				localAnswer = encoded;
 				const el = document.getElementById('answerQR') as HTMLElement;
 				if (el) await generateToCanvas(el, encoded);
-				pushToast('Answer generated', 'info');
-			} catch (e) { pushToast('Answer creation failed', 'error'); }
+				pushToast('Response code generated! Share it back with the host.', 'success');
+			} catch (e) {
+				console.error('Create answer error:', e);
+				const errorMessage = e instanceof Error ? e.message : 'Unknown error occurred';
+				pushToast(`Failed to generate response: ${errorMessage}`, 'error');
+			}
 		}
 
 	async function onScanOffer(){
@@ -127,41 +146,143 @@
 			</div>
 
 			<div class="bg-[#121937] p-4 rounded-xl">
-				<h2 class="uppercase text-sm mb-2 text-slate-300">Peer-to-Peer Linking</h2>
-				<div class="mb-3">
-					<button on:click={onCreateOffer} class="px-3 py-2 bg-[#2a3570] rounded-md mr-2">📱 Create Offer</button>
-					<span class="px-2 py-1 bg-[#1a2249] rounded-md"> <span class="inline-block w-2 h-2 bg-[#ff6b6b] rounded-full mr-2 align-middle"></span> disconnected</span>
+				<h2 class="uppercase text-sm mb-4 text-slate-300">🔗 Connect with Another Device</h2>
+				
+				<!-- Step 1: Choose your role -->
+				<div class="mb-6">
+					<div class="text-sm text-slate-400 mb-3">Step 1: Choose how to connect</div>
+					<div class="grid grid-cols-2 gap-3">
+						<button 
+							on:click={() => { connectionMode = 'host'; showConnectionFlow = true; }}
+							class="p-3 bg-[#1a2249] hover:bg-[#2a3570] rounded-lg text-center transition-colors"
+							class:bg-[#2a3570]={connectionMode === 'host'}
+						>
+							<div class="text-lg mb-1">🏠</div>
+							<div class="text-sm font-medium">Host Session</div>
+							<div class="text-xs text-slate-400">Create invitation</div>
+						</button>
+						<button 
+							on:click={() => { connectionMode = 'join'; showConnectionFlow = true; }}
+							class="p-3 bg-[#1a2249] hover:bg-[#2a3570] rounded-lg text-center transition-colors"
+							class:bg-[#2a3570]={connectionMode === 'join'}
+						>
+							<div class="text-lg mb-1">📱</div>
+							<div class="text-sm font-medium">Join Session</div>
+							<div class="text-xs text-slate-400">Use invitation</div>
+						</button>
+					</div>
 				</div>
 
-
-				<div id="qrSection" class="mb-3">
-					<div id="offerQR" class="inline-block mb-2"></div>
-					{#if localOffer}
-						<div class="flex gap-2 items-center mt-2">
-							<input class="flex-1 rounded-md p-2 bg-[#0f1530] border border-[#2c3978] text-xs" readonly value={localOffer} />
-							<button class="px-3 py-2 bg-[#2563eb] rounded-md" on:click={copyOffer}>Copy</button>
+				<!-- Connection Flow -->
+				{#if showConnectionFlow}
+					<div class="border-t border-[#2c3978] pt-4">
+						{#if connectionMode === 'host'}
+							<!-- Host Flow -->
+							<div class="space-y-4">
+								<div class="flex items-center text-sm">
+									<div class="w-6 h-6 bg-[#1b7a61] rounded-full flex items-center justify-center text-xs font-bold mr-3">1</div>
+									<span class="text-slate-300">Generate your connection code</span>
+								</div>
+								
+								{#if !localOffer}
+									<button on:click={onCreateOffer} class="w-full px-4 py-3 bg-[#1b7a61] hover:bg-[#2a8a71] rounded-lg font-medium transition-colors">
+										🚀 Generate Connection Code
+									</button>
+								{:else}
+									<div class="space-y-3">
+										<div class="flex items-center text-sm text-green-400">
+											<div class="w-6 h-6 bg-green-600 rounded-full flex items-center justify-center text-xs font-bold mr-3">✓</div>
+											<span>Connection code ready!</span>
+										</div>
+										
+										<div class="bg-[#0f1530] p-3 rounded-lg">
+											<div class="text-xs text-slate-400 mb-2">Share this code with the other device:</div>
+											<div id="offerQR" class="flex justify-center mb-3"></div>
+											<div class="flex gap-2">
+												<input class="flex-1 rounded-md p-2 bg-[#0a0f20] border border-[#2c3978] text-xs font-mono" readonly value={localOffer} />
+												<button class="px-3 py-2 bg-[#2563eb] rounded-md" on:click={copyOffer}>📋 Copy</button>
+											</div>
+										</div>
+										
+										<div class="flex items-center text-sm text-slate-400">
+											<div class="w-6 h-6 bg-[#2a3570] rounded-full flex items-center justify-center text-xs font-bold mr-3">2</div>
+											<span>Waiting for them to connect...</span>
+										</div>
+									</div>
+								{/if}
+							</div>
+						{:else}
+							<!-- Join Flow -->
+							<div class="space-y-4">
+								<div class="flex items-center text-sm">
+									<div class="w-6 h-6 bg-[#1b7a61] rounded-full flex items-center justify-center text-xs font-bold mr-3">1</div>
+									<span class="text-slate-300">Enter the connection code</span>
+								</div>
+								
+								<div class="space-y-3">
+									<div class="flex gap-2">
+										<input 
+											bind:value={remoteOffer} 
+											placeholder="Paste the connection code here..." 
+											class="flex-1 rounded-md p-3 bg-[#0f1530] border border-[#2c3978] text-sm" 
+										/>
+										<button on:click={onScanOffer} class="px-4 py-3 bg-[#2a3570] rounded-md" title="Scan QR Code">📷</button>
+									</div>
+									
+									{#if remoteOffer}
+										<div class="flex items-center text-sm text-green-400">
+											<div class="w-6 h-6 bg-green-600 rounded-full flex items-center justify-center text-xs font-bold mr-3">✓</div>
+											<span>Code received!</span>
+										</div>
+										
+										<div class="flex items-center text-sm">
+											<div class="w-6 h-6 bg-[#1b7a61] rounded-full flex items-center justify-center text-xs font-bold mr-3">2</div>
+											<span class="text-slate-300">Generate response code</span>
+										</div>
+										
+										<button on:click={onCreateAnswer} class="w-full px-4 py-3 bg-[#1b7a61] hover:bg-[#2a8a71] rounded-lg font-medium transition-colors">
+											� Generate Response Code
+										</button>
+										
+										{#if localAnswer}
+											<div class="space-y-3">
+												<div class="flex items-center text-sm text-green-400">
+													<div class="w-6 h-6 bg-green-600 rounded-full flex items-center justify-center text-xs font-bold mr-3">✓</div>
+													<span>Response code ready!</span>
+												</div>
+												
+												<div class="bg-[#0f1530] p-3 rounded-lg">
+													<div class="text-xs text-slate-400 mb-2">Share this response code back:</div>
+													<div id="answerQR" class="flex justify-center mb-3"></div>
+													<div class="flex gap-2">
+														<input class="flex-1 rounded-md p-2 bg-[#0a0f20] border border-[#2c3978] text-xs font-mono" readonly value={localAnswer} />
+														<button class="px-3 py-2 bg-[#2563eb] rounded-md" on:click={() => navigator.clipboard.writeText(localAnswer)}>📋 Copy</button>
+													</div>
+												</div>
+											</div>
+										{/if}
+									{/if}
+								</div>
+							</div>
+						{/if}
+						
+						<!-- Connection Status -->
+						<div class="mt-6 pt-4 border-t border-[#2c3978]">
+							<div class="flex items-center justify-between">
+								<div class="flex items-center">
+									<span class="inline-block w-3 h-3 bg-[#ff6b6b] rounded-full mr-2"></span>
+									<span class="text-sm text-slate-400">Not connected</span>
+								</div>
+								<button 
+									on:click={() => { showConnectionFlow = false; connectionMode = ''; localOffer = ''; remoteOffer = ''; localAnswer = ''; }}
+									class="text-xs text-slate-500 hover:text-slate-300"
+								>
+									Reset
+								</button>
+							</div>
 						</div>
-					{/if}
-				</div>
-
-				<div class="mt-3">
-					<div class="mb-2 text-slate-400">If you received an Offer from a peer:</div>
-					<div class="flex gap-2">
-						<input bind:value={remoteOffer} placeholder="Paste peer's Offer here or scan QR" class="flex-1 rounded-md p-2 bg-[#0f1530] border border-[#2c3978]" />
-						<button on:click={onScanOffer} class="px-3 py-2 bg-[#2a3570] rounded-md">📷 Scan QR</button>
-						<button on:click={onCreateAnswer} class="px-3 py-2 bg-[#2a3570] rounded-md">📱 Create Answer</button>
 					</div>
-
-					<div id="answerSection" class="mt-3">
-						<div id="answerQR" class="inline-block"></div>
-					</div>
-
-					<div class="mt-3 flex gap-2">
-						<input bind:value={localAnswer} placeholder="Paste peer's Answer here" class="flex-1 rounded-md p-2 bg-[#0f1530] border border-[#2c3978]" />
-						<button on:click={onApplyAnswer} class="px-3 py-2 bg-[#1b7a61] rounded-md">✅ Apply Answer</button>
-						<button class="px-3 py-2 bg-[#7a1b1b] rounded-md">❌ Disconnect</button>
-					</div>
-				</div>
+				{/if}
 			</div>
 		</div>
 

@@ -1,14 +1,38 @@
 export async function createAnswerAndLocalize(offerSDP: RTCSessionDescriptionInit) {
-  // Find the most recent peer (created for offer)
-  const m = getPeerMap();
-  const last = Array.from(m.values()).at(-1);
-  if (!last) throw new Error('No pending peer');
-  const pc = last.pc;
-  await pc.setRemoteDescription(offerSDP);
-  const answer = await pc.createAnswer();
-  await pc.setLocalDescription(answer);
-  await waitForIceGathering(pc);
-  return pc.localDescription;
+  try {
+    // Find the most recent peer (created for offer), or create one if none exists
+    const m = getPeerMap();
+    let last = Array.from(m.values()).at(-1);
+
+    // If no peer connection exists, create one (for joining devices)
+    if (!last) {
+      console.log('No existing peer connection found, creating new one for answer...');
+      const { id, pc } = await newPeer();
+      last = { pc, dc: null };
+      // Note: We don't create a data channel here because the offerer already created one
+    }
+
+    const pc = last.pc;
+    console.log('Setting remote description...', offerSDP.type);
+
+    await pc.setRemoteDescription(offerSDP);
+    console.log('Creating answer...');
+
+    const answer = await pc.createAnswer();
+    console.log('Setting local description...');
+
+    await pc.setLocalDescription(answer);
+    console.log('Waiting for ICE gathering...');
+
+    await waitForIceGathering(pc);
+    console.log('Answer created successfully');
+
+    return pc.localDescription;
+  } catch (error) {
+    console.error('Answer creation failed:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    throw new Error(`Failed to create answer: ${errorMessage}`);
+  }
 }
 
 export async function applyRemoteAnswer(answerSDP: RTCSessionDescriptionInit) {
@@ -23,7 +47,15 @@ import { writable } from 'svelte/store';
 
 export const peers = writable<Map<string, { pc: RTCPeerConnection, dc: RTCDataChannel | null }>>(new Map());
 
-const pcConfig: RTCConfiguration = { iceServers: [] };
+const pcConfig: RTCConfiguration = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' }
+  ]
+};
 
 export async function newPeer() {
   const pc = new RTCPeerConnection(pcConfig);
