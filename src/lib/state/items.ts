@@ -1,5 +1,4 @@
 import { writable } from 'svelte/store';
-import { broadcast } from '$lib/p2p/webrtc';
 
 export interface Item {
   id: string;
@@ -12,6 +11,12 @@ export interface Item {
 const DB_NAME = 'p2p-items-db';
 const DB_STORE = 'items';
 let db: IDBDatabase | null = null;
+
+// WebRTC manager reference (set later to avoid circular imports)
+let webRTCManager: any = null;
+export function setWebRTCManager(manager: any) {
+  webRTCManager = manager;
+}
 
 function openDB(): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -67,8 +72,9 @@ export function makeItem(text: string, author?: string): Item {
   return { id, text, updatedAt: new Date().toISOString(), deleted: false, author };
 }
 
-export async function applyOp(op: { type: 'upsert' | 'delete', item?: Item, id?: string }) {
+export async function applyOp(op: { type: 'upsert' | 'delete', item?: Item, id?: string }, shouldBroadcast = true) {
   const cur = getCurrentItems();
+  
   if (op.type === 'upsert' && op.item) {
     const existing = cur[op.item.id];
     if (!existing || (existing.updatedAt || '') < (op.item.updatedAt || '')) {
@@ -76,18 +82,45 @@ export async function applyOp(op: { type: 'upsert' | 'delete', item?: Item, id?:
       await putToDB(op.item);
       itemsStore.set({ ...cur });
 
-      // Broadcast the operation to connected peers
-      broadcast({ type: 'op', op });
+      // Broadcast to peers if requested
+      if (shouldBroadcast && webRTCManager) {
+        webRTCManager.broadcastToAllPeers({
+          action: op.item.deleted ? 'delete' : (existing ? 'update' : 'add'),
+          item: op.item
+        });
+      }
     }
   } else if (op.type === 'delete' && op.id) {
     const existing = cur[op.id];
-    const tomb: Item = { id: op.id, text: existing?.text || '', updatedAt: new Date().toISOString(), deleted: true, author: existing?.author };
+    const tomb: Item = { 
+      id: op.id, 
+      text: existing?.text || '', 
+      updatedAt: new Date().toISOString(), 
+      deleted: true, 
+      author: existing?.author 
+    };
     cur[op.id] = tomb;
     await putToDB(tomb);
     itemsStore.set({ ...cur });
 
-    // Broadcast the operation to connected peers
-    broadcast({ type: 'op', op });
+    // Broadcast to peers if requested
+    if (shouldBroadcast && webRTCManager) {
+      webRTCManager.broadcastToAllPeers({
+        action: 'delete',
+        item: tomb
+      });
+    }
+  }
+}
+
+// Handle incoming item sync from peers
+export function broadcast(payload: any, shouldApply = true) {
+  if (!shouldApply) return; // Called from WebRTC to prevent loops
+  
+  if (payload.action === 'add' || payload.action === 'update') {
+    applyOp({ type: 'upsert', item: payload.item }, false);
+  } else if (payload.action === 'delete') {
+    applyOp({ type: 'delete', id: payload.item.id }, false);
   }
 }
 

@@ -5,6 +5,7 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev",
+		"prebuild": "node scripts/generate-build-info.cjs",
 		"build": "vite build",
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''",
@@ -32,6 +33,7 @@
 		"vitest": "^3.2.4"
 	},
 	"dependencies": {
+		"@zxing/library": "^0.21.3",
 		"html5-qrcode": "^2.3.8",
 		"jsqr": "^1.4.0",
 		"lz-string": "^1.5.0",

@@ -1,431 +1,376 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import { itemsStore, loadFromDB, makeItem, applyOp, exportJSON, importJSON } from '$lib/state/items';
+	import { onMount, onDestroy } from 'svelte';
+	import { itemsStore, loadFromDB, makeItem, applyOp, setWebRTCManager } from '$lib/state/items';
+	import { peersStore } from '$lib/state/peers';
+	import { getWebRTCManager } from '$lib/p2p/webrtc-simple';
 	import { generateToCanvas } from '$lib/qr/generate';
 	import { startScanner } from '$lib/qr/scan';
 	import { pushToast } from '$lib/ui/Toast.svelte';
-	import { peerCount, peerStatus } from '$lib/stores/peers';
-	import { peers as peersStore, setLocalPeerId, getAllPeers, disconnectPeer, allPeers } from '$lib/p2p/webrtc';
-	import { runDiagnostics } from '$lib/utils/diagnostics';
-	import { encodePayload, decodePayload } from '$lib/p2p/signaling';
-	import { createOfferAndLocalize, createAnswerAndLocalize, applyRemoteAnswer } from '$lib/p2p/webrtc';
+	import { BUILD_INFO, getBuildSummary, getDetailedBuildInfo } from '$lib/build-info';
   
 	let newText = '';
-	let remoteOffer = '';
-	let localOffer = '';
-	let localAnswer = '';
-	let connectionMode = '';
-	let showConnectionFlow = false;
-	let peerId = '';
+	let connectionCode = '';
+	let isHost = false;
+	let isScanning = false;
+	let showAdvanced = false;
+	let manualCode = '';
+	let showDetailedBuild = false;
+	let autoCheckInterval: number | null = null;
 
 	$: items = $itemsStore;
-	$: connectionStatus = $peerStatus;
-	$: connectedPeers = Array.from($peersStore.entries()).filter(([_, peer]) => peer.dc?.readyState === 'open' && !!peer.remoteId);
-	$: allNetworkPeers = Array.from($allPeers.values());
-	$: isHost = connectionMode === 'host';
-	$: console.log('🔄 UI Update - Connected peers:', connectedPeers.map(([id, peer]) => ({
-		id: peer.remoteId,
-		dcState: peer.dc?.readyState,
-		dcExists: !!peer.dc
-	})));
+	$: peers = $peersStore;
+	$: connectedPeers = Object.values(peers).filter(p => p.connected);
 	
-	// Regenerate QR code when localOffer changes
-	$: if (localOffer && connectionMode === 'host') {
-		// Use setTimeout to ensure DOM is updated
-		setTimeout(() => {
-			const el = document.getElementById('offerQR') as HTMLElement;
-			if (el) {
-				console.log('🎨 Generating QR code for offer:', localOffer.substring(0, 50) + '...');
-				generateToCanvas(el, localOffer).catch(console.error);
-			} else {
-				console.warn('⚠️ offerQR element not found');
-			}
-		}, 100);
-	}
+	const webRTC = getWebRTCManager();
 
 	onMount(async () => {
 		await loadFromDB();
-		// Generate unique peer ID
-		peerId = Math.random().toString(36).slice(2, 8);
-		setLocalPeerId(peerId);
+		// Connect the WebRTC manager to items store
+		setWebRTCManager(webRTC);
 	});
 
-	function addItem(){
+	function addItem() {
 		if (!newText.trim()) return;
-		const it = makeItem(newText.trim());
-		applyOp({ type: 'upsert', item: it });
+		const item = makeItem(newText.trim());
+		applyOp({ type: 'upsert', item: item });
 		newText = '';
 		pushToast('Item added', 'success');
 	}
 
+	function deleteItem(id: string) {
+		applyOp({ type: 'delete', id });
+		pushToast('Item deleted', 'success');
+	}
 
-	async function onCreateOffer(){
+	async function createConnection() {
 		try {
-			// Clear previous offer to ensure UI updates
-			localOffer = '';
+			console.log('🚀 Creating new connection...');
+			connectionCode = await webRTC.createOffer();
+			console.log('✅ Connection code generated:', connectionCode);
+			isHost = true;
 			
-			const desc = await createOfferAndLocalize();
-			const encoded = encodePayload({ sdp: desc });
-			localOffer = encoded;
-			
-			console.log('📡 Generated offer code:', encoded.substring(0, 50) + '...');
-			
-			// Also manually generate QR code after a short delay
-			setTimeout(async () => {
-				const el = document.getElementById('offerQR') as HTMLElement;
-				if (el) {
-					console.log('🎨 Manually generating QR code...');
-					await generateToCanvas(el, encoded);
+			// Generate QR code
+			setTimeout(() => {
+				const qrEl = document.getElementById('qrCode');
+				if (qrEl) {
+					console.log('📱 Generating QR code for:', connectionCode);
+					generateToCanvas(qrEl, connectionCode).catch(console.error);
 				}
-			}, 200);
+			}, 100);
 			
-			pushToast('Connection code generated! Share it with a joining device.', 'success');
-		} catch (e) { 
-			console.error('Offer creation error:', e);
-			pushToast('Failed to generate connection code', 'error'); 
+			// Start polling for answers
+			startAnswerPolling();
+			
+			pushToast('Connection ready! Share this 4-character code: ' + connectionCode, 'success');
+		} catch (error) {
+			console.error('Failed to create connection:', error);
+			pushToast('Failed to create connection', 'error');
 		}
 	}
 
-	function copyOffer() {
-		const textToCopy = localAnswer || localOffer;
-		if (textToCopy) {
-			navigator.clipboard.writeText(textToCopy);
-			console.log('📋 Copied connection code:', textToCopy.substring(0, 50) + '...');
+	function startAnswerPolling() {
+		if (autoCheckInterval) {
+			clearInterval(autoCheckInterval);
+		}
+		
+		autoCheckInterval = window.setInterval(async () => {
+			if (!connectionCode || !isHost) {
+				return;
+			}
+			
+			try {
+				const hasAnswer = await webRTC.checkForAnswer(connectionCode);
+				if (hasAnswer) {
+					pushToast('Device connected automatically!', 'success');
+					// Keep polling for more connections
+				}
+			} catch (error) {
+				console.error('Error checking for answer:', error);
+			}
+		}, 2000);
+	}
+
+	function stopAnswerPolling() {
+		if (autoCheckInterval) {
+			clearInterval(autoCheckInterval);
+			autoCheckInterval = null;
+		}
+	}
+
+	async function startScan() {
+		if (isScanning) return;
+		
+		try {
+			isScanning = true;
+			pushToast('Starting camera...', 'info');
+			
+			const result = await startScanner();
+			console.log('🔍 Scanned QR result:', result);
+			console.log('🔍 Trimmed result:', result.trim());
+			console.log('🔍 Result length:', result.trim().length);
+			
+			// Validate the scanned code before trying to connect
+			const cleanCode = result.trim();
+			if (!cleanCode) {
+				throw new Error('Empty QR code result');
+			}
+			
+			if (cleanCode.length === 4 && /^[A-Z0-9]{4}$/.test(cleanCode)) {
+				console.log('✅ Valid 4-character connection ID detected');
+			} else if (cleanCode.length > 50) {
+				console.log('📝 Long content detected, assuming full SDP');
+			} else {
+				console.log('⚠️ Unusual code format:', cleanCode);
+			}
+			
+			// Try to connect using scanned code
+			const response = await webRTC.acceptOffer(cleanCode);
+			pushToast('Connected! ' + response, 'success');
+			
+		} catch (error) {
+			console.error('Scan failed:', error);
+			pushToast('Scan failed: ' + (error as Error).message, 'error');
+		} finally {
+			isScanning = false;
+		}
+	}
+
+	async function joinManually() {
+		if (!manualCode.trim()) {
+			pushToast('Please enter a connection code', 'error');
+			return;
+		}
+		
+		try {
+			const response = await webRTC.acceptOffer(manualCode.trim());
+			pushToast('Connected! ' + response, 'success');
+		} catch (error) {
+			console.error('Manual join failed:', error);
+			pushToast('Join failed: ' + (error as Error).message, 'error');
+		}
+	}
+
+	async function applyAnswer() {
+		if (!manualCode.trim()) {
+			pushToast('Please enter an answer code', 'error');
+			return;
+		}
+		
+		try {
+			await webRTC.handleAnswer(manualCode.trim());
+			pushToast('Answer applied! Connection should be established.', 'success');
+		} catch (error) {
+			console.error('Apply answer failed:', error);
+			pushToast('Failed to apply answer: ' + (error as Error).message, 'error');
+		}
+	}
+
+	function copyCode() {
+		if (connectionCode) {
+			navigator.clipboard.writeText(connectionCode);
 			pushToast('Code copied to clipboard!', 'success');
 		}
 	}
 
-
-		async function onCreateAnswer(){
-			try {
-				// Check if we have a remote offer
-				if (!remoteOffer.trim()) {
-					throw new Error('Please enter the connection code first');
-				}
-
-				// Parse the offer from remoteOffer
-				const offerObj = decodePayload(remoteOffer);
-				if (!offerObj.sdp) {
-					throw new Error('Invalid connection code format');
-				}
-
-				console.log('Creating response for connection code:', offerObj.sdp.type);
-				const answerDesc = await createAnswerAndLocalize(offerObj.sdp);
-				const encoded = encodePayload({ sdp: answerDesc });
-				localAnswer = encoded;
-				const el = document.getElementById('answerQR') as HTMLElement;
-				if (el) await generateToCanvas(el, encoded);
-				pushToast('Response code generated! Share it back with the host.', 'success');
-			} catch (e) {
-				console.error('Create answer error:', e);
-				const errorMessage = e instanceof Error ? e.message : 'Unknown error occurred';
-				pushToast(`Failed to generate response: ${errorMessage}`, 'error');
-			}
-		}
-
-	async function onScanOffer(){
-		startScanner((text) => {
-			remoteOffer = text;
-			pushToast('Scanned offer', 'success');
-		});
+	function disconnect() {
+		stopAnswerPolling();
+		webRTC.disconnect();
+		isHost = false;
+		connectionCode = '';
+		pushToast('Disconnected from all peers', 'info');
 	}
 
-
-		async function onApplyAnswer(){
-			try {
-				const parsed = decodePayload(localAnswer || remoteOffer);
-				if (!parsed.sdp) throw new Error('No SDP in answer');
-				await applyRemoteAnswer(parsed.sdp);
-				pushToast('Answer applied', 'success');
-			} catch (e) {
-				pushToast('Failed to apply answer', 'error');
-			}
-		}
-
-	async function doExport(){
-		const json = await exportJSON();
-		const blob = new Blob([json], { type: 'application/json' });
-		const a = document.createElement('a');
-		a.href = URL.createObjectURL(blob); a.download = 'p2p-items.json'; a.click();
-		pushToast('Exported JSON', 'info');
-	}
-
-	function runDiag(){ runDiagnostics(); pushToast('Diagnostics printed to console', 'info'); }
-
-	function disconnectPeerById(peerId: string) {
-		try {
-			const success = disconnectPeer(peerId);
-			if (success) {
-				pushToast(`Disconnected peer ${peerId}`, 'success');
-			} else {
-				pushToast(`Failed to disconnect peer ${peerId}`, 'error');
-			}
-		} catch (e) {
-			console.error('Failed to disconnect peer:', e);
-			pushToast('Failed to disconnect peer', 'error');
-		}
-	}
+	// Cleanup on component destroy
+	onDestroy(() => {
+		stopAnswerPolling();
+	});
 </script>
 
-<div class="p-6 min-h-screen bg-gradient-to-br from-[#0b1020] via-[#0b1530] to-[#0a1130] text-white">
-	<div class="max-w-4xl mx-auto grid gap-6">
-		<div class="bg-[#121937] p-4 rounded-xl shadow-lg flex justify-between items-center">
-			<div>
-				<h1 class="text-xl font-bold">P2P Items (No Server)</h1>
-				<div class="text-sm text-slate-300">Local-first list that syncs peer-to-peer via WebRTC</div>
+<div class="container mx-auto p-4 max-w-4xl">
+	<header class="mb-8">
+		<h1 class="text-3xl font-bold text-gray-800 mb-2">P2P Items List</h1>
+		<p class="text-gray-600">Local-first collaborative items with WebRTC</p>
+		<div class="text-sm text-gray-500 mt-2">
+			<div class="flex items-center gap-4">
+				<button 
+					on:click={() => showDetailedBuild = !showDetailedBuild}
+					class="hover:text-gray-700 transition-colors cursor-pointer"
+					title="Click for detailed build info"
+				>
+					{getBuildSummary()} | Connected: {connectedPeers.length}
+				</button>
 			</div>
-			<div class="text-sm">
-				<span class="px-3 py-1 rounded-full bg-[#1a2249]">Peer ID: {peerId}</span>
-			</div>
+			{#if showDetailedBuild}
+				<div class="mt-2 p-3 bg-gray-50 rounded-lg border text-xs font-mono whitespace-pre-line">
+					{getDetailedBuildInfo()}
+				</div>
+			{/if}
 		</div>
+	</header>
 
-		<div class="grid md:grid-cols-2 gap-6">
-			<div class="bg-[#121937] p-4 rounded-xl">
-				<h2 class="uppercase text-sm mb-2 text-slate-300">Items</h2>
-				<div class="flex gap-2 mb-3">
-					<input bind:value={newText} placeholder="Add a new item…" class="flex-1 rounded-md p-2 bg-[#0f1530] border border-[#2c3978]" />
-					<button on:click={addItem} class="px-3 py-2 rounded-md bg-[#1b7a61]">Add</button>
-				</div>
-				<div class="space-y-2">
-									{#each Object.values(items) as it}
-										{#if !it.deleted}
-											<div class="p-3 bg-[#0f1530] rounded-md flex justify-between items-center">
-												<div>
-													<div class="font-medium">{it.text}</div>
-													<div class="text-xs text-slate-400">{it.updatedAt}</div>
-												</div>
-												<div class="flex gap-2">
-													<button class="px-2 py-1 bg-[#e11d48] rounded-md text-white hover:bg-[#be123c]" on:click={() => applyOp({ type: 'delete', id: it.id })}>🗑️ Delete</button>
-												</div>
-											</div>
-										{/if}
-									{/each}
-				</div>
+	<!-- Connection Status -->
+	{#if connectedPeers.length > 0}
+		<div class="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg">
+			<h3 class="text-sm font-semibold text-green-800 mb-2">Connected Peers ({connectedPeers.length})</h3>
+			<div class="flex flex-wrap gap-2">
+				{#each connectedPeers as peer}
+					<span class="px-2 py-1 bg-green-100 text-green-700 text-xs rounded">{peer.id}</span>
+				{/each}
 			</div>
+			<button on:click={disconnect} class="mt-2 text-sm text-red-600 hover:text-red-800">
+				Disconnect All
+			</button>
+		</div>
+	{/if}
 
-			<div class="bg-[#121937] p-4 rounded-xl">
-				<h2 class="uppercase text-sm mb-4 text-slate-300">🔗 Connect with Another Device</h2>
-				
-				<!-- Step 1: Choose your role -->
-				<div class="mb-6">
-					<div class="text-sm text-slate-400 mb-3">Step 1: Choose how to connect</div>
-					<div class="grid grid-cols-2 gap-3">
-						<button 
-							on:click={() => { connectionMode = 'host'; showConnectionFlow = true; }}
-							class="p-3 bg-[#1a2249] hover:bg-[#2a3570] rounded-lg text-center transition-colors"
-							class:bg-[#2a3570]={connectionMode === 'host'}
-						>
-							<div class="text-lg mb-1">🏠</div>
-							<div class="text-sm font-medium">Host Session</div>
-							<div class="text-xs text-slate-400">Create invitation</div>
-						</button>
-						<button 
-							on:click={() => { connectionMode = 'join'; showConnectionFlow = true; }}
-							class="p-3 bg-[#1a2249] hover:bg-[#2a3570] rounded-lg text-center transition-colors"
-							class:bg-[#2a3570]={connectionMode === 'join'}
-						>
-							<div class="text-lg mb-1">📱</div>
-							<div class="text-sm font-medium">Join Session</div>
-							<div class="text-xs text-slate-400">Use invitation</div>
-						</button>
-					</div>
+	<!-- Connection Controls -->
+	<div class="mb-8 p-4 bg-gray-50 rounded-lg">
+		<h2 class="text-xl font-semibold mb-4">Connect Devices</h2>
+		
+		{#if !connectionCode}
+			<div class="space-y-4">
+				<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+					<button 
+						on:click={createConnection}
+						class="w-full bg-blue-500 text-white px-4 py-3 rounded-lg hover:bg-blue-600 transition-colors"
+					>
+						📡 Host Connection
+					</button>
+					
+					<button 
+						on:click={startScan}
+						disabled={isScanning}
+						class="w-full bg-green-500 text-white px-4 py-3 rounded-lg hover:bg-green-600 transition-colors disabled:bg-gray-400"
+					>
+						{isScanning ? '📷 Scanning...' : '📷 Scan QR Code'}
+					</button>
 				</div>
-
-				<!-- Connection Flow -->
-				{#if showConnectionFlow}
-					<div class="border-t border-[#2c3978] pt-4">
-						{#if connectionMode === 'host'}
-							<!-- Host Flow -->
-							<div class="space-y-4">
-								<div class="flex items-center text-sm">
-									<div class="w-6 h-6 bg-[#1b7a61] rounded-full flex items-center justify-center text-xs font-bold mr-3">1</div>
-									<span class="text-slate-300">Generate connection codes for joiners</span>
-								</div>
-								
-								<div class="space-y-3">
-									<button on:click={onCreateOffer} class="w-full px-4 py-3 bg-[#1b7a61] hover:bg-[#2a8a71] rounded-lg font-medium transition-colors">
-										🚀 Generate New Connection Code
-									</button>
-									
-									{#if localOffer}
-										<div class="space-y-3">
-											<div class="flex items-center text-sm text-green-400">
-												<div class="w-6 h-6 bg-green-600 rounded-full flex items-center justify-center text-xs font-bold mr-3">✓</div>
-												<span>Connection code ready!</span>
-											</div>
-											
-											<div class="bg-[#0f1530] p-3 rounded-lg">
-												<div class="text-xs text-slate-400 mb-2">Share this connection code:</div>
-												<div id="offerQR" class="flex justify-center mb-3"></div>
-												<div class="flex gap-2">
-													<input class="flex-1 rounded-md p-2 bg-[#0a0f20] border border-[#2c3978] text-xs font-mono" readonly value={localOffer} />
-													<button class="px-3 py-2 bg-[#2563eb] rounded-md" on:click={copyOffer}>📋 Copy</button>
-												</div>
-											</div>
-										</div>
-									{/if}
-									
-									<div class="text-xs text-slate-400 mt-2">
-										Each code is for one-time use only. Generate a new code for each joining device.
-									</div>
-								</div>
-								
-								<div class="flex items-center text-sm">
-									<div class="w-6 h-6 bg-[#2a3570] rounded-full flex items-center justify-center text-xs font-bold mr-3">2</div>
-									<span>Apply response codes from joiners</span>
-								</div>
-								
-								<div class="bg-[#0f1530] p-3 rounded-lg">
-									<div class="text-xs text-slate-400 mb-2">Paste response code from any joiner:</div>
-									<div class="flex gap-2">
-										<input 
-											bind:value={localAnswer} 
-											placeholder="Paste response code here..." 
-											class="flex-1 rounded-md p-2 bg-[#0a0f20] border border-[#2c3978] text-xs font-mono" 
-										/>
-										<button on:click={onApplyAnswer} class="px-3 py-2 bg-[#1b7a61] rounded-md">✅ Apply</button>
-									</div>
-								</div>
+				
+				<div>
+					<button 
+						on:click={() => showAdvanced = !showAdvanced}
+						class="text-sm text-gray-600 hover:text-gray-800"
+					>
+						{showAdvanced ? '↑' : '↓'} Manual Connection
+					</button>
+				</div>
+				
+				{#if showAdvanced}
+					<div class="mt-4 p-4 bg-white border rounded">
+						<div class="space-y-3">
+							<div>
+								<label for="manualCode" class="block text-sm font-medium mb-1">4-Character Connection Code:</label>
+								<input 
+									id="manualCode"
+									bind:value={manualCode}
+									placeholder="Enter 4-character code (e.g. AB12)..."
+									maxlength="4"
+									class="w-full p-2 border rounded text-sm uppercase"
+									style="text-transform: uppercase"
+								>
 							</div>
-						{:else}
-							<!-- Join Flow -->
-							<div class="space-y-4">
-								<div class="flex items-center text-sm">
-									<div class="w-6 h-6 bg-[#1b7a61] rounded-full flex items-center justify-center text-xs font-bold mr-3">1</div>
-									<span class="text-slate-300">Enter the connection code</span>
-								</div>
-								
-								<div class="space-y-3">
-									<div class="flex gap-2">
-										<input 
-											bind:value={remoteOffer} 
-											placeholder="Paste the connection code here..." 
-											class="flex-1 rounded-md p-3 bg-[#0f1530] border border-[#2c3978] text-sm" 
-										/>
-										<button on:click={onScanOffer} class="px-4 py-3 bg-[#2a3570] rounded-md" title="Scan QR Code">📷</button>
-									</div>
-									
-									{#if remoteOffer}
-										<div class="flex items-center text-sm text-green-400">
-											<div class="w-6 h-6 bg-green-600 rounded-full flex items-center justify-center text-xs font-bold mr-3">✓</div>
-											<span>Code received!</span>
-										</div>
-										
-										<div class="flex items-center text-sm">
-											<div class="w-6 h-6 bg-[#1b7a61] rounded-full flex items-center justify-center text-xs font-bold mr-3">2</div>
-											<span class="text-slate-300">Generate response code</span>
-										</div>
-										
-										<button on:click={onCreateAnswer} class="w-full px-4 py-3 bg-[#1b7a61] hover:bg-[#2a8a71] rounded-lg font-medium transition-colors">
-											� Generate Response Code
-										</button>
-										
-										{#if localAnswer}
-											<div class="space-y-3">
-												<div class="flex items-center text-sm text-green-400">
-													<div class="w-6 h-6 bg-green-600 rounded-full flex items-center justify-center text-xs font-bold mr-3">✓</div>
-													<span>Response code ready!</span>
-												</div>
-												
-												<div class="bg-[#0f1530] p-3 rounded-lg">
-													<div class="text-xs text-slate-400 mb-2">Share this response code back:</div>
-													<div id="answerQR" class="flex justify-center mb-3"></div>
-													<div class="flex gap-2">
-														<input class="flex-1 rounded-md p-2 bg-[#0a0f20] border border-[#2c3978] text-xs font-mono" readonly value={localAnswer} />
-														<button class="px-3 py-2 bg-[#2563eb] rounded-md" on:click={() => navigator.clipboard.writeText(localAnswer)}>📋 Copy</button>
-													</div>
-												</div>
-											</div>
-										{/if}
-									{/if}
-								</div>
+							<div class="flex gap-2">
+								<button 
+									on:click={joinManually}
+									class="px-3 py-2 bg-green-500 text-white text-sm rounded hover:bg-green-600"
+								>
+									Connect to Host
+								</button>
 							</div>
-						{/if}
-						
-						<!-- Successfully Connected Peers -->
-						{#if allNetworkPeers.length > 0}
-							<div class="mt-4 pt-4 border-t border-[#2c3978]">
-								<div class="text-sm text-slate-400 mb-3">Successfully Connected Peers ({allNetworkPeers.length}):</div>
-								<div class="space-y-2">
-									{#each allNetworkPeers as peer}
-										<div class="flex items-center justify-between bg-[#0f1530] p-3 rounded-lg">
-											<div class="flex items-center">
-												<span class="inline-block w-3 h-3 bg-green-500 rounded-full mr-3"></span>
-												<div>
-													<div class="font-mono text-sm font-medium">{peer.id}</div>
-													<div class="text-xs text-slate-400">
-														{#if peer.isHost}
-															Host • Connected {peer.connectedAt ? new Date(peer.connectedAt).toLocaleTimeString() : ''}
-														{:else}
-															Peer • Connected {peer.connectedAt ? new Date(peer.connectedAt).toLocaleTimeString() : ''}
-														{/if}
-													</div>
-												</div>
-											</div>
-											{#if isHost && !peer.isHost}
-												<button 
-													class="px-3 py-2 bg-[#e11d48] hover:bg-[#be123c] rounded-md text-white text-sm transition-colors"
-													on:click={() => disconnectPeerById(peer.id)}
-													title="Disconnect this peer"
-												>
-													🔌 Disconnect
-												</button>
-											{/if}
-										</div>
-									{/each}
-								</div>
-							</div>
-						{/if}
+						</div>
 					</div>
 				{/if}
 			</div>
-		</div>
-
-		<!-- Network Peers Section (Always Visible) -->
-		{#if allNetworkPeers.length > 0}
-			<div class="bg-[#121937] p-4 rounded-xl">
-				<h2 class="uppercase text-sm mb-4 text-slate-300">🌐 Successfully Connected Peers</h2>
-				<div class="grid gap-3">
-					{#each allNetworkPeers as peer}
-						<div class="flex items-center justify-between bg-[#0f1530] p-3 rounded-lg">
-							<div class="flex items-center">
-								<span class="inline-block w-3 h-3 bg-green-500 rounded-full mr-3"></span>
-								<div>
-									<div class="font-mono text-sm font-medium">{peer.id}</div>
-									<div class="text-xs text-slate-400">
-										{#if peer.isHost}
-											Host • Connected {peer.connectedAt ? new Date(peer.connectedAt).toLocaleTimeString() : ''}
-										{:else}
-											Peer • Connected {peer.connectedAt ? new Date(peer.connectedAt).toLocaleTimeString() : ''}
-										{/if}
-									</div>
-								</div>
-							</div>
-							{#if isHost && !peer.isHost}
-								<button 
-									class="px-3 py-2 bg-[#e11d48] hover:bg-[#be123c] rounded-md text-white text-sm transition-colors"
-									on:click={() => disconnectPeerById(peer.id)}
-									title="Disconnect this peer"
-								>
-									🔌 Disconnect
-								</button>
-							{/if}
+		{:else}
+			<div class="text-center">
+				<div class="mb-4">
+					{#if isHost}
+						<h3 class="text-lg font-semibold text-blue-800 mb-2">🔗 Hosting Connection</h3>
+						<p class="text-sm text-gray-600 mb-4">Share this simple 4-character code: <strong class="text-lg font-mono">{connectionCode}</strong></p>
+						
+						<div class="flex justify-center mb-4">
+							<div id="qrCode" class="border-2 border-gray-300 p-4 rounded-lg bg-white"></div>
 						</div>
-					{/each}
+					{:else}
+						<h3 class="text-lg font-semibold text-green-800 mb-2">✅ Connected as Client</h3>
+						<p class="text-sm text-gray-600 mb-4">Connection established! You should see real-time sync now.</p>
+					{/if}
 				</div>
+				
+				<div class="mb-4">
+					<div class="flex gap-2">
+						<input 
+							value={connectionCode}
+							readonly
+							class="flex-1 p-2 border rounded text-sm bg-gray-50 font-mono"
+						>
+						<button 
+							on:click={copyCode}
+							class="px-3 py-2 bg-gray-500 text-white text-sm rounded hover:bg-gray-600"
+						>
+							📋 Copy
+						</button>
+					</div>
+				</div>
+				
+				<button 
+					on:click={() => { connectionCode = ''; isHost = false; }}
+					class="text-sm text-gray-600 hover:text-gray-800"
+				>
+					↶ Back to Connection Options
+				</button>
 			</div>
 		{/if}
-
-		<div class="bg-[#121937] p-4 rounded-xl">
-			<h2 class="uppercase text-sm mb-2 text-slate-300">Debug</h2>
-			<div class="flex gap-2">
-				<button on:click={doExport} class="px-3 py-2 bg-[#2a3570] rounded-md">Export JSON</button>
-				<button on:click={() => document.getElementById('filePick')?.click()} class="px-3 py-2 bg-[#2a3570] rounded-md">Import JSON</button>
-				<button on:click={runDiag} class="px-3 py-2 bg-[#2563eb] rounded-md">🔧 Run Diagnostics</button>
-				<input id="filePick" type="file" hidden on:change={async (e)=>{ const f = (e.target as HTMLInputElement).files?.[0]; if (!f) return; const t = await f.text(); await importJSON(t); pushToast('Imported JSON','info'); }} accept="application/json" />
-			</div>
-		</div>
-
 	</div>
 
+	<!-- Add Item -->
+	<div class="mb-6">
+		<div class="flex gap-2">
+			<input 
+				bind:value={newText}
+				on:keydown={(e) => e.key === 'Enter' && addItem()}
+				placeholder="Add new item..."
+				class="flex-1 p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+			>
+			<button 
+				on:click={addItem}
+				class="px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+			>
+				Add
+			</button>
+		</div>
+	</div>
+
+	<!-- Items List -->
+	<div class="space-y-3">
+		{#each Object.values(items).filter(item => !item.deleted).sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || '')) as item}
+			<div class="flex items-center justify-between p-4 bg-white border border-gray-200 rounded-lg shadow-sm hover:shadow-md transition-shadow">
+				<div class="flex-1">
+					<div class="text-gray-800">{item.text}</div>
+					<div class="text-xs text-gray-500 mt-1">
+						{new Date(item.updatedAt).toLocaleString()}
+						{#if item.author}
+							• by {item.author}
+						{/if}
+					</div>
+				</div>
+				<button 
+					on:click={() => deleteItem(item.id)}
+					class="ml-4 px-3 py-1 text-red-600 hover:bg-red-50 rounded text-sm"
+				>
+					Delete
+				</button>
+			</div>
+		{:else}
+			<div class="text-center text-gray-500 py-8">
+				No items yet. Add your first item above!
+			</div>
+		{/each}
+	</div>
 </div>
+
+<style>
+	:global(body) {
+		background-color: #f7fafc;
+	}
+</style>
